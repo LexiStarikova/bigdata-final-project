@@ -1,0 +1,7 @@
+pylint
+pyspark
+pandas
+streamlit
+pyarrow
+matplotlib
+numpy
