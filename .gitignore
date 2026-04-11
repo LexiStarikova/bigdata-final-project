@@ -173,6 +173,9 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# Cluster DB password (Stage I; see secrets/README.txt)
+secrets/.psql.pass
+
 # Dataset files (stored on cluster, not in repo)
 data/*.parquet
 data/*.csv
