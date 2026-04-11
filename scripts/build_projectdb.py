@@ -7,13 +7,12 @@ Connection matches course materials:
 Password: secrets/.psql.pass (see IU Hadoop Cluster manual).
 """
 
-from __future__ import annotations
-
 import glob
 import io
 import os
 import sys
 from pathlib import Path
+from typing import List
 
 import pandas as pd
 import psycopg2 as psql
@@ -54,14 +53,23 @@ def _repo_root() -> Path:
 
 
 def _load_password(root: Path) -> str:
+    """Password: file secrets/.psql.pass (course), or env PGPASSWORD."""
     secret = root / "secrets" / ".psql.pass"
-    if not secret.is_file():
-        print(
-            "Missing secrets/.psql.pass — create it on the cluster (see secrets/README.txt).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return secret.read_text(encoding="utf-8").strip()
+    alt = root / "secrets" / "psql.pass"
+    raw = os.environ.get("PGPASSWORD", "").strip()
+    if raw:
+        return raw
+    for path in (secret, alt):
+        if path.is_file():
+            raw = path.read_text(encoding="utf-8").strip()
+            if raw:
+                return raw
+    print(
+        "No database password: set PGPASSWORD, or create a non-empty "
+        "secrets/.psql.pass (see secrets/README.txt).",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _connect(root: Path):
@@ -71,12 +79,23 @@ def _connect(root: Path):
         sys.exit(1)
     dbname = f"{user}_projectdb"
     password = _load_password(root)
+    if not password:
+        print(
+            "Password is empty after reading secrets/.psql.pass. "
+            "Put the cluster DB password on one line, no spaces around it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     host = os.environ.get("PGHOST", "hadoop-04.uni.innopolis.ru")
-    port = os.environ.get("PGPORT", "5432")
-    conn_str = (
-        f"host={host} port={port} user={user} dbname={dbname} password={password}"
+    port = int(os.environ.get("PGPORT", "5432"))
+    # Keyword args avoid breakage if the password contains special characters.
+    return psql.connect(
+        host=host,
+        port=port,
+        user=user,
+        dbname=dbname,
+        password=password,
     )
-    return psql.connect(conn_str)
 
 
 def _normalize_frame(raw: pd.DataFrame) -> pd.DataFrame:
@@ -104,7 +123,7 @@ def _normalize_frame(raw: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _parquet_paths(root: Path) -> list[Path]:
+def _parquet_paths(root: Path) -> List[Path]:
     pattern = str(root / "data" / "yellow_tripdata_2025-*.parquet")
     paths = sorted(Path(p) for p in glob.glob(pattern))
     if not paths:

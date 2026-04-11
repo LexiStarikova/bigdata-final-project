@@ -5,12 +5,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PASS_FILE="secrets/.psql.pass"
-if [[ ! -f "$PASS_FILE" ]]; then
-  echo "Create $PASS_FILE with your cluster DB password (see secrets/README.txt)." >&2
+# Same password as Python/psycopg2: secrets/.psql.pass or secrets/psql.pass or env PGPASSWORD
+if [[ -n "${PGPASSWORD:-}" ]]; then
+  PASSWORD="${PGPASSWORD}"
+elif [[ -f "secrets/.psql.pass" ]]; then
+  PASSWORD="$(head -n 1 secrets/.psql.pass | tr -d '\r\n')"
+elif [[ -f "secrets/psql.pass" ]]; then
+  PASSWORD="$(head -n 1 secrets/psql.pass | tr -d '\r\n')"
+else
+  echo "Set PGPASSWORD or create secrets/.psql.pass (see secrets/README.txt)." >&2
   exit 1
 fi
-PASSWORD="$(head -n 1 "$PASS_FILE" | tr -d '\r')"
+if [[ -z "$PASSWORD" ]]; then
+  echo "Password file exists but is empty; put the DB password on one line." >&2
+  exit 1
+fi
 
 USER_NAME="${USER:-}"
 if [[ -z "$USER_NAME" ]]; then
