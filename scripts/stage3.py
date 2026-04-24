@@ -60,7 +60,7 @@ spark.sparkContext.setLogLevel("WARN")
 print(f"Spark {spark.version} | data={DATA_DIR}")
 
 # ── Load data ──────────────────────────────────────────────────────────────
-raw_df = spark.read.parquet(os.path.join(DATA_DIR, "yellow_tripdata_2023-*.parquet"))
+raw_df = spark.read.parquet(os.path.join(DATA_DIR, "yellow_tripdata_2025-*.parquet"))
 print(f"Raw records: {raw_df.count():,}")
 
 # ── Feature engineering ────────────────────────────────────────────────────
