@@ -176,6 +176,7 @@ def load_parquet_to_postgres(conn, root: Path) -> None:
 
 
 def main() -> None:
+    """Create tables, load Parquet data into PostgreSQL, and verify."""
     root = _repo_root()
     os.chdir(root)
     sql_dir = root / "sql"

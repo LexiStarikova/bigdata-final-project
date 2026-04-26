@@ -1,4 +1,4 @@
-# Dataset: NYC Yellow Taxi Trip Records 2023
+# Dataset: NYC Yellow Taxi Trip Records 2025
 
 ## Source
 NYC Taxi & Limousine Commission (TLC) Trip Record Data  
@@ -7,23 +7,23 @@ https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
 ## Download
 Files are hosted at:
 ```
-https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-{MM}.parquet
+https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-{MM}.parquet
 ```
 where `{MM}` is the two-digit month (01–12).
 
-To download all 12 months of 2023:
+To download all 12 months of 2025:
 ```bash
 for m in 01 02 03 04 05 06 07 08 09 10 11 12; do
-  curl -O "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-${m}.parquet"
+  curl -O "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-${m}.parquet"
 done
 ```
 
 ## Statistics
 | Property | Value |
 |---|---|
-| Files | 12 (one per month, Jan–Dec 2023) |
-| Total size | ~607 MB (Parquet) |
-| Total records | ~38.3 million |
+| Files | 12 (one per month, Jan–Dec 2025) |
+| Total size | ~792 MB (Parquet) |
+| Total records | ~48.7 million |
 | Format | Apache Parquet |
 
 ## Schema

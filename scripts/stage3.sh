@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 3 — Spark ML: train 3 classifiers on NYC Taxi 2023, tune with CV, save models & results
+# Stage 3 — Spark ML: train 3 classifiers on NYC Taxi 2025, tune with CV, save models & results
 # Run on YARN cluster:
 #   spark-submit --master yarn --deploy-mode cluster scripts/stage3.py \
 #     --data-dir hdfs:///user/$USER/taxi/data \

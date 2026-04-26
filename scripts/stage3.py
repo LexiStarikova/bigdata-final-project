@@ -1,6 +1,6 @@
 """
 Stage 3 — Predictive Data Analysis (PDA)
-NYC Yellow Taxi 2023 — Generous Tip Binary Classification
+NYC Yellow Taxi 2025 — Generous Tip Binary Classification
 
 Models:
   1. Random Forest Classifier
@@ -31,9 +31,9 @@ from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 
 import pandas as pd
+import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 # ── Argument parsing ───────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Stage 3: Spark ML pipeline")
@@ -233,7 +233,10 @@ results["GBT"] = {
     },
 }
 
-gbt_fi = pd.DataFrame({"feature": FEATURE_COLS, "importance": gbt_stage.featureImportances.toArray()})
+gbt_fi = pd.DataFrame({
+    "feature": FEATURE_COLS,
+    "importance": gbt_stage.featureImportances.toArray(),
+})
 gbt_fi = gbt_fi.sort_values("importance", ascending=False)
 fig, ax = plt.subplots(figsize=(10, 6))
 ax.barh(gbt_fi["feature"][:15][::-1], gbt_fi["importance"][:15][::-1], color="darkorange")
@@ -336,7 +339,7 @@ out = {
 out["best_model"] = best_name
 out["sample_prediction"] = {"label": int(pred_row["prediction"]), "prob_generous_tip": prob_gen}
 
-with open(os.path.join(OUTPUT_DIR, "stage3_results.json"), "w") as fh:
+with open(os.path.join(OUTPUT_DIR, "stage3_results.json"), "w", encoding="utf-8") as fh:
     json.dump(out, fh, indent=2)
 
 print(f"\nAll outputs saved to {OUTPUT_DIR}/")
