@@ -23,11 +23,15 @@ SET hive.exec.dynamic.partition.mode=nonstrict;
 DROP TABLE IF EXISTS yellow_taxi_trips_part_buck;
 
 -- 5. Create partitioned + bucketed external table for better performance
+-- Datetime columns MUST stay BIGINT (milliseconds) to match Avro schema (type "long").
+-- Declaring TIMESTAMP here while TBLPROPERTIES still point at yellow_taxi_trips.avsc
+-- makes the Avro SerDe read/write NULL for those fields — all time-based EDA then looks empty.
+
 CREATE EXTERNAL TABLE yellow_taxi_trips_part_buck (
     trip_id BIGINT,
     vendorid INT,
-    tpep_pickup_datetime TIMESTAMP,
-    tpep_dropoff_datetime TIMESTAMP,
+    tpep_pickup_datetime BIGINT,
+    tpep_dropoff_datetime BIGINT,
     passenger_count DOUBLE,
     trip_distance DOUBLE,
     ratecodeid DOUBLE,
@@ -56,8 +60,8 @@ INSERT INTO yellow_taxi_trips_part_buck PARTITION (year)
 SELECT
     trip_id,
     vendorid,
-    FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT)) AS tpep_pickup_datetime,
-    FROM_UNIXTIME(CAST(tpep_dropoff_datetime / 1000 AS BIGINT)) AS tpep_dropoff_datetime,
+    tpep_pickup_datetime,
+    tpep_dropoff_datetime,
     passenger_count,
     trip_distance,
     ratecodeid,
@@ -84,9 +88,14 @@ SHOW PARTITIONS yellow_taxi_trips_part_buck;
 -- Count total records to ensure all data was transferred
 SELECT COUNT(*) FROM yellow_taxi_trips_part_buck;
 
--- Sample data
-SELECT trip_id, vendorid, tpep_pickup_datetime, tpep_dropoff_datetime, year 
-FROM yellow_taxi_trips_part_buck LIMIT 3;
+-- Sample data (human-readable pickup time from epoch ms)
+SELECT trip_id,
+       vendorid,
+       FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT))   AS pickup_ts,
+       FROM_UNIXTIME(CAST(tpep_dropoff_datetime / 1000 AS BIGINT))   AS dropoff_ts,
+       year
+FROM yellow_taxi_trips_part_buck
+LIMIT 3;
 
 -- 8. Drop original external table
 DROP TABLE yellow_taxi_trips;

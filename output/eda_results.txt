@@ -1,0 +1,809 @@
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> USE team35_projectdb;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SET hive.resultset.use.unique.column.names=false;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Pickup/dropoff in yellow_taxi_trips_part_buck are BIGINT epoch milliseconds (Avro long).
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Human time: FROM_UNIXTIME(CAST(ms / 1000 AS BIGINT)).
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Hour / weekday: substring on that string (avoid HOUR() on TIMESTAMP + bad Avro cast).
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q1: Dataset overview 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q1_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q1_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     total_trips       BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     earliest_pickup   STRING,
+. . . . . . . . . . . . . . . . . . . . . . .>     latest_pickup     STRING,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_revenue     DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_fare          DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_distance      DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_tip           DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q1_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q1_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                                           AS total_trips,
+. . . . . . . . . . . . . . . . . . . . . . .>     CAST(MIN(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT))) AS STRING) AS earliest_pickup,
+. . . . . . . . . . . . . . . . . . . . . . .>     CAST(MAX(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT))) AS STRING) AS latest_pickup,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(total_amount),    2)                     AS total_revenue,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount),     2)                     AS avg_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(trip_distance),   2)                     AS avg_distance,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount),      2)                     AS avg_tip
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .>   AND tpep_pickup_datetime IS NOT NULL;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q1_results;
++--------------+----------------------+----------------------+------------------+-----------+---------------+----------+
+| total_trips  |   earliest_pickup    |    latest_pickup     |  total_revenue   | avg_fare  | avg_distance  | avg_tip  |
++--------------+----------------------+----------------------+------------------+-----------+---------------+----------+
+| 48722573     | 2025-01-01 00:00:00  | 2025-12-31 23:59:59  | 1.31106576214E9  | 18.42     | 6.84          | 2.84     |
++--------------+----------------------+----------------------+------------------+-----------+---------------+----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q2: Data quality 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q2_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q2_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     total_records          BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     null_datetime          BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     zero_distance          BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     zero_or_neg_fare       BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     zero_passengers        BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     outlier_dist_gt50mi    BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     outlier_fare_gt500     BIGINT
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q2_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q2_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                                                   AS total_records,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(CASE WHEN tpep_pickup_datetime IS NULL  THEN 1 END)  AS null_datetime,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(CASE WHEN trip_distance = 0            THEN 1 END)  AS zero_distance,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(CASE WHEN fare_amount <= 0             THEN 1 END)  AS zero_or_neg_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(CASE WHEN passenger_count = 0          THEN 1 END)  AS zero_passengers,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(CASE WHEN trip_distance > 50           THEN 1 END)  AS outlier_dist_gt50mi,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(CASE WHEN fare_amount > 500            THEN 1 END)  AS outlier_fare_gt500
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q2_results;
++----------------+----------------+----------------+-------------------+------------------+----------------------+---------------------+
+| total_records  | null_datetime  | zero_distance  | zero_or_neg_fare  | zero_passengers  | outlier_dist_gt50mi  | outlier_fare_gt500  |
++----------------+----------------+----------------+-------------------+------------------+----------------------+---------------------+
+| 48722573       | 0              | 1402958        | 2870234           | 260062           | 9142                 | 844                 |
++----------------+----------------+----------------+-------------------+------------------+----------------------+---------------------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q3: Passenger count distribution
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q3_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q3_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     passenger_count   INT,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_count        BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_fare          DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_tip           DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q3_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q3_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     CAST(passenger_count AS INT)    AS passenger_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                        AS trip_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount), 2)      AS avg_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount),  2)      AS avg_tip
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY CAST(passenger_count AS INT)
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY trip_count DESC;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q3_results;
++------------------+-------------+-----------+----------+
+| passenger_count  | trip_count  | avg_fare  | avg_tip  |
++------------------+-------------+-----------+----------+
+| 1                | 29413382    | 18.36     | 3.55     |
+| NULL             | 11611894    | 16.79     | 0.33     |
+| 2                | 5126619     | 21.1      | 4.03     |
+| 3                | 1207185     | 20.92     | 3.78     |
+| 4                | 829535      | 24.0      | 3.98     |
+| 0                | 260062      | 16.89     | 3.17     |
+| 5                | 173454      | 17.56     | 3.46     |
+| 6                | 100296      | 17.98     | 3.54     |
+| 8                | 87          | 82.05     | 12.2     |
+| 9                | 34          | 77.42     | 8.39     |
+| 7                | 25          | 69.38     | 9.25     |
++------------------+-------------+-----------+----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q4: Trip distance distribution (bucketed)
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q4_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q4_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     distance_bucket   STRING,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_count        BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_distance      DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_fare          DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q4_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q4_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     CASE
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance = 0      THEN '0_zero_bad_data'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 1      THEN 'A_under_1mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 3      THEN 'B_1to3mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 7      THEN 'C_3to7mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 15     THEN 'D_7to15mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 50     THEN 'E_15to50mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         ELSE                             'F_over_50mi_outlier'
+. . . . . . . . . . . . . . . . . . . . . . .>     END                             AS distance_bucket,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                        AS trip_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(trip_distance), 2)    AS avg_distance,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount),   2)    AS avg_fare
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY
+. . . . . . . . . . . . . . . . . . . . . . .>     CASE
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance = 0      THEN '0_zero_bad_data'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 1      THEN 'A_under_1mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 3      THEN 'B_1to3mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 7      THEN 'C_3to7mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 15     THEN 'D_7to15mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 50     THEN 'E_15to50mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         ELSE                             'F_over_50mi_outlier'
+. . . . . . . . . . . . . . . . . . . . . . .>     END
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY distance_bucket;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q4_results;
++----------------------+-------------+---------------+-----------+
+|   distance_bucket    | trip_count  | avg_distance  | avg_fare  |
++----------------------+-------------+---------------+-----------+
+| 0_zero_bad_data      | 1402958     | 0.0           | 19.98     |
+| A_under_1mi          | 9815018     | 0.66          | 8.08      |
+| B_1to3mi             | 22342615    | 1.78          | 12.99     |
+| C_3to7mi             | 8818120     | 4.44          | 22.18     |
+| D_7to15mi            | 4341405     | 9.79          | 38.18     |
+| E_15to50mi           | 1993298     | 18.82         | 68.57     |
+| F_over_50mi_outlier  | 9159        | 18344.48      | 196.6     |
++----------------------+-------------+---------------+-----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q5: Revenue component breakdown — one scan, wide result
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q5_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q5_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     total_fare              DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_tip               DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_mta_tax           DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_tolls             DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_improvement_sur   DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_congestion_sur    DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_airport_fee       DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_extra             DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     grand_total             DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q5_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q5_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(fare_amount),           2)  AS total_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(tip_amount),            2)  AS total_tip,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(mta_tax),               2)  AS total_mta_tax,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(tolls_amount),          2)  AS total_tolls,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(improvement_surcharge), 2)  AS total_improvement_sur,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(congestion_surcharge),  2)  AS total_congestion_sur,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(airport_fee),           2)  AS total_airport_fee,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(extra),                 2)  AS total_extra,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(total_amount),          2)  AS grand_total
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q5_results;
++-----------------+-----------------+----------------+----------------+------------------------+-----------------------+--------------------+---------------+------------------+
+|   total_fare    |    total_tip    | total_mta_tax  |  total_tolls   | total_improvement_sur  | total_congestion_sur  | total_airport_fee  |  total_extra  |   grand_total    |
++-----------------+-----------------+----------------+----------------+------------------------+-----------------------+--------------------+---------------+------------------+
+| 8.9743919975E8  | 1.3848174481E8  | 2.327400933E7  | 2.430448771E7  | 4.630136325E7          | 8.10183605E7          | 5388115.0          | 5.67307458E7  | 1.31106576214E9  |
++-----------------+-----------------+----------------+----------------+------------------------+-----------------------+--------------------+---------------+------------------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q6: Payment type breakdown — how do passengers prefer to pay?
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q6_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q6_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     payment_type    INT,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_count      BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_revenue   DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_fare        DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_tip         DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q6_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q6_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     CAST(payment_type AS INT)       AS payment_type,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                        AS trip_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(total_amount), 2)     AS total_revenue,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount),  2)     AS avg_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount),   2)     AS avg_tip
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY CAST(payment_type AS INT)
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY trip_count DESC;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q6_results;
++---------------+-------------+-----------------+-----------+----------+
+| payment_type  | trip_count  |  total_revenue  | avg_fare  | avg_tip  |
++---------------+-------------+-----------------+-----------+----------+
+| 1             | 31053982    | 9.3918764553E8  | 19.83     | 4.34     |
+| 0             | 11611894    | 2.5997038091E8  | 16.79     | 0.33     |
+| 2             | 4654334     | 1.0714931577E8  | 17.8      | 0.0      |
+| 4             | 1094213     | 2410622.79      | 1.85      | 0.02     |
+| 3             | 308147      | 2347725.15      | 5.77      | 0.01     |
+| 5             | 3           | 71.99           | 17.27     | 0.0      |
++---------------+-------------+-----------------+-----------+----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q7: Peak hours — when is demand highest?
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q7_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q7_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     hour_of_day    INT,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_count     BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_revenue    DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_tip        DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_revenue  DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q7_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q7_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     CAST(SUBSTRING(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT)), 12, 2) AS INT)
+. . . . . . . . . . . . . . . . . . . . . . .>         AS hour_of_day,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                                                   AS trip_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(total_amount), 2)                               AS avg_revenue,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount),   2)                                AS avg_tip,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(total_amount), 2)                                AS total_revenue
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .>   AND tpep_pickup_datetime IS NOT NULL
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY CAST(SUBSTRING(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT)), 12, 2) AS INT)
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY hour_of_day;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q7_results;
++--------------+-------------+--------------+----------+----------------+
+| hour_of_day  | trip_count  | avg_revenue  | avg_tip  | total_revenue  |
++--------------+-------------+--------------+----------+----------------+
+| 0            | 1540191     | 26.61        | 2.41     | 4.098897478E7  |
+| 1            | 1015732     | 24.65        | 2.11     | 2.503300219E7  |
+| 2            | 668371      | 23.2         | 1.87     | 1.550856306E7  |
+| 3            | 457073      | 23.65        | 1.8      | 1.080809243E7  |
+| 4            | 360923      | 28.35        | 2.05     | 1.023383575E7  |
+| 5            | 385453      | 31.26        | 2.44     | 1.204985644E7  |
+| 6            | 758797      | 27.82        | 2.23     | 2.111023854E7  |
+| 7            | 1383178     | 26.13        | 2.38     | 3.613884231E7  |
+| 8            | 1869221     | 25.47        | 2.45     | 4.760860196E7  |
+| 9            | 1998754     | 25.49        | 2.7      | 5.094146793E7  |
+| 10           | 2083263     | 25.92        | 2.88     | 5.400028607E7  |
+| 11           | 2234450     | 26.27        | 2.96     | 5.869342362E7  |
+| 12           | 2435175     | 26.98        | 3.0      | 6.570928423E7  |
+| 13           | 2553786     | 27.16        | 3.08     | 6.935486312E7  |
+| 14           | 2740930     | 28.3         | 3.21     | 7.757655745E7  |
+| 15           | 2854120     | 28.13        | 3.18     | 8.029179197E7  |
+| 16           | 2934914     | 29.76        | 3.36     | 8.73403681E7   |
+| 17           | 3291155     | 28.22        | 3.11     | 9.288337408E7  |
+| 18           | 3473209     | 26.66        | 2.89     | 9.259769378E7  |
+| 19           | 3071607     | 26.49        | 2.88     | 8.137891538E7  |
+| 20           | 2826124     | 26.07        | 2.86     | 7.367120797E7  |
+| 21           | 2901039     | 26.2         | 2.84     | 7.60013745E7   |
+| 22           | 2730170     | 26.61        | 2.72     | 7.265999273E7  |
+| 23           | 2154938     | 27.14        | 2.57     | 5.848515375E7  |
++--------------+-------------+--------------+----------+----------------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q8: Airport vs standard trips — which rate type earns more?
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> --     ratecodeid: 1=Standard, 2=JFK, 3=Newark,
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> --                 4=Nassau/Westchester, 5=Negotiated, 6=Group
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q8_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q8_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_type      STRING,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_count     BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_distance   DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_fare       DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_total      DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_tip        DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q8_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q8_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     CASE CAST(ratecodeid AS INT)
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 1 THEN '1_Standard'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 2 THEN '2_JFK_Airport'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 3 THEN '3_Newark_Airport'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 4 THEN '4_Nassau_Westchester'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 5 THEN '5_Negotiated'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 6 THEN '6_Group_ride'
+. . . . . . . . . . . . . . . . . . . . . . .>         ELSE        '7_Other'
+. . . . . . . . . . . . . . . . . . . . . . .>     END                              AS trip_type,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                         AS trip_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(trip_distance), 2)     AS avg_distance,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount),   2)     AS avg_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(total_amount),  2)     AS avg_total,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount),    2)     AS avg_tip
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY CAST(ratecodeid AS INT)
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY avg_total DESC;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q8_results;
++-----------------------+-------------+---------------+-----------+------------+----------+
+|       trip_type       | trip_count  | avg_distance  | avg_fare  | avg_total  | avg_tip  |
++-----------------------+-------------+---------------+-----------+------------+----------+
+| 4_Nassau_Westchester  | 116228      | 26.34         | 99.7      | 122.2      | 12.28    |
+| 6_Group_ride          | 51          | 0.81          | 110.97    | 113.15     | 0.14     |
+| 2_JFK_Airport         | 1297932     | 17.1          | 64.89     | 87.33      | 11.25    |
+| 3_Newark_Airport      | 150692      | 12.79         | 60.76     | 83.65      | 10.0     |
+| 5_Negotiated          | 448421      | 6.44          | 64.11     | 78.63      | 8.99     |
+| 7_Other               | 804397      | 13.54         | 34.57     | 36.33      | 0.0      |
+| 1_Standard            | 34292958    | 2.62          | 15.78     | 24.68      | 3.3      |
+| 7_Other               | 11611894    | 17.46         | 16.79     | 22.39      | 0.33     |
++-----------------------+-------------+---------------+-----------+------------+----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q9: Revenue per mile by distance bucket — pricing efficiency
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q9_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q9_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     distance_bucket   STRING,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_count        BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_distance      DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_fare          DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     revenue_per_mile  DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q9_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q9_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     CASE
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 1  THEN 'A_under_1mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 3  THEN 'B_1to3mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 7  THEN 'C_3to7mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 15 THEN 'D_7to15mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         ELSE                         'E_over_15mi'
+. . . . . . . . . . . . . . . . . . . . . . .>     END                                               AS distance_bucket,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                                          AS trip_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(trip_distance),                    2)   AS avg_distance,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount),                      2)   AS avg_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount / NULLIF(trip_distance, 0)), 2) AS revenue_per_mile
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .>   AND trip_distance > 0
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY
+. . . . . . . . . . . . . . . . . . . . . . .>     CASE
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 1  THEN 'A_under_1mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 3  THEN 'B_1to3mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 7  THEN 'C_3to7mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN trip_distance < 15 THEN 'D_7to15mi'
+. . . . . . . . . . . . . . . . . . . . . . .>         ELSE                         'E_over_15mi'
+. . . . . . . . . . . . . . . . . . . . . . .>     END
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY distance_bucket;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q9_results;
++------------------+-------------+---------------+-----------+-------------------+
+| distance_bucket  | trip_count  | avg_distance  | avg_fare  | revenue_per_mile  |
++------------------+-------------+---------------+-----------+-------------------+
+| A_under_1mi      | 9815018     | 0.66          | 8.08      | 57.22             |
+| B_1to3mi         | 22342615    | 1.78          | 12.99     | 7.57              |
+| C_3to7mi         | 8818120     | 4.44          | 22.18     | 5.15              |
+| D_7to15mi        | 4341405     | 9.79          | 38.18     | 3.92              |
+| E_over_15mi      | 2002457     | 102.64        | 69.16     | 3.66              |
++------------------+-------------+---------------+-----------+-------------------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q10: Day-of-week — avoid date_format(...,'u'): pattern 'u' breaks on many Hive/Java builds.
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> --      We derive weekday from yyyy-MM-dd (first 10 chars of string TS) vs a fixed Sunday anchor.
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q10_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q10_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     day_of_week     STRING,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_count      BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_revenue   DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_revenue     DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_tip         DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q10_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q10_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     CASE pmod(
+. . . . . . . . . . . . . . . . . . . . . . .>             CAST(datediff(
+. . . . . . . . . . . . . . . . . . . . . . .>                 TO_DATE(SUBSTRING(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT)), 1, 10)),
+. . . . . . . . . . . . . . . . . . . . . . .>                 CAST('1999-12-26' AS DATE)) AS INT),
+. . . . . . . . . . . . . . . . . . . . . . .>             7)
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 0 THEN '1_Sunday'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 1 THEN '2_Monday'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 2 THEN '3_Tuesday'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 3 THEN '4_Wednesday'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 4 THEN '5_Thursday'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 5 THEN '6_Friday'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN 6 THEN '7_Saturday'
+. . . . . . . . . . . . . . . . . . . . . . .>         ELSE        'Unknown'
+. . . . . . . . . . . . . . . . . . . . . . .>     END                              AS day_of_week,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                         AS trip_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(SUM(total_amount), 2)      AS total_revenue,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(total_amount), 2)      AS avg_revenue,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount),   2)      AS avg_tip
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .>   AND tpep_pickup_datetime IS NOT NULL
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY pmod(
+. . . . . . . . . . . . . . . . . . . . . . .>     CAST(datediff(
+. . . . . . . . . . . . . . . . . . . . . . .>         TO_DATE(SUBSTRING(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT)), 1, 10)),
+. . . . . . . . . . . . . . . . . . . . . . .>         CAST('1999-12-26' AS DATE)) AS INT),
+. . . . . . . . . . . . . . . . . . . . . . .>     7)
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY day_of_week;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q10_results;
++--------------+-------------+-----------------+--------------+----------+
+| day_of_week  | trip_count  |  total_revenue  | avg_revenue  | avg_tip  |
++--------------+-------------+-----------------+--------------+----------+
+| 1_Sunday     | 6453544     | 1.7529577005E8  | 27.16        | 2.65     |
+| 2_Monday     | 5949735     | 1.6670746484E8  | 28.02        | 3.06     |
+| 3_Tuesday    | 6759665     | 1.8318899883E8  | 27.1         | 3.0      |
+| 4_Wednesday  | 7292606     | 1.977787527E8   | 27.12        | 2.98     |
+| 5_Thursday   | 7477304     | 2.0460244262E8  | 27.36        | 2.98     |
+| 6_Friday     | 7253597     | 1.9498720689E8  | 26.88        | 2.81     |
+| 7_Saturday   | 7536122     | 1.8850512621E8  | 25.01        | 2.46     |
++--------------+-------------+-----------------+--------------+----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q11: Top 10 busiest pickup locations in 2025
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q11_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q11_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     pulocationid   INT,
+. . . . . . . . . . . . . . . . . . . . . . .>     pickup_count   BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_fare       DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_tip        DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q11_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q11_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     pulocationid,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                    AS pickup_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount), 2)  AS avg_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount),  2)  AS avg_tip
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY pulocationid
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY pickup_count DESC
+. . . . . . . . . . . . . . . . . . . . . . .> LIMIT 10;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q11_results;
++---------------+---------------+-----------+----------+
+| pulocationid  | pickup_count  | avg_fare  | avg_tip  |
++---------------+---------------+-----------+----------+
+| 237           | 2125560       | 12.81     | 2.58     |
+| 161           | 2089754       | 16.06     | 3.03     |
+| 132           | 2062453       | 56.04     | 8.69     |
+| 236           | 1874807       | 13.25     | 2.53     |
+| 186           | 1543165       | 16.11     | 3.05     |
+| 230           | 1516403       | 17.94     | 3.17     |
+| 162           | 1508176       | 15.35     | 3.04     |
+| 142           | 1387612       | 13.86     | 2.63     |
+| 170           | 1294387       | 14.95     | 2.66     |
+| 234           | 1293642       | 14.21     | 2.53     |
++---------------+---------------+-----------+----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Q12: Late-night tipping — do night passengers tip more?
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS q12_results;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE q12_results (
+. . . . . . . . . . . . . . . . . . . . . . .>     time_of_day   STRING,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_count    BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_fare      DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     avg_tip       DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     tip_pct       DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> ROW FORMAT DELIMITED
+. . . . . . . . . . . . . . . . . . . . . . .> FIELDS TERMINATED BY ','
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/q12_results';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO q12_results
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     CASE
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN pickup_hour BETWEEN  6 AND 11 THEN 'A_Morning_06to11'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN pickup_hour BETWEEN 12 AND 17 THEN 'B_Afternoon_12to17'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN pickup_hour BETWEEN 18 AND 22 THEN 'C_Evening_18to22'
+. . . . . . . . . . . . . . . . . . . . . . .>         ELSE                                 'D_Night_23to05'
+. . . . . . . . . . . . . . . . . . . . . . .>     END                                                        AS time_of_day,
+. . . . . . . . . . . . . . . . . . . . . . .>     COUNT(*)                                                   AS trip_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(fare_amount),                                2)  AS avg_fare,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount),                                2)    AS avg_tip,
+. . . . . . . . . . . . . . . . . . . . . . .>     ROUND(AVG(tip_amount / NULLIF(fare_amount, 0)) * 100, 2) AS tip_pct
+. . . . . . . . . . . . . . . . . . . . . . .> FROM (
+. . . . . . . . . . . . . . . . . . . . . . .>     SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>         CAST(SUBSTRING(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT)), 12, 2) AS INT) AS pickup_hou r,
+. . . . . . . . . . . . . . . . . . . . . . .>         fare_amount,
+. . . . . . . . . . . . . . . . . . . . . . .>         tip_amount
+. . . . . . . . . . . . . . . . . . . . . . .>     FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .>     WHERE year = 2025
+. . . . . . . . . . . . . . . . . . . . . . .>       AND tpep_pickup_datetime IS NOT NULL
+. . . . . . . . . . . . . . . . . . . . . . .>       AND fare_amount > 0
+. . . . . . . . . . . . . . . . . . . . . . .>       AND CAST(payment_type AS INT) = 1
+. . . . . . . . . . . . . . . . . . . . . . .> ) h
+. . . . . . . . . . . . . . . . . . . . . . .> GROUP BY
+. . . . . . . . . . . . . . . . . . . . . . .>     CASE
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN pickup_hour BETWEEN  6 AND 11 THEN 'A_Morning_06to11'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN pickup_hour BETWEEN 12 AND 17 THEN 'B_Afternoon_12to17'
+. . . . . . . . . . . . . . . . . . . . . . .>         WHEN pickup_hour BETWEEN 18 AND 22 THEN 'C_Evening_18to22'
+. . . . . . . . . . . . . . . . . . . . . . .>         ELSE                                 'D_Night_23to05'
+. . . . . . . . . . . . . . . . . . . . . . .>     END
+. . . . . . . . . . . . . . . . . . . . . . .> ORDER BY tip_pct DESC;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM q12_results;
++---------------------+-------------+-----------+----------+----------+
+|     time_of_day     | trip_count  | avg_fare  | avg_tip  | tip_pct  |
++---------------------+-------------+-----------+----------+----------+
+| 212121212120212121  | 1           | 3.0       | 1.75     | 58.33    |
+| 232222211919181823  | 1           | 4.4       | 2.18     | 49.55    |
+| 2020C_Evening_18to  | 1           | 20.5      | 10.0     | 48.78    |
+| 181818181818201818  | 1           | 5.1       | 2.32     | 45.49    |
+| Evening_18to22C_Ev  | 16965       | 23.88     | 4.47     | 41.97    |
+| 191918222120201918  | 1           | 10.7      | 4.49     | 41.96    |
+| 21212121212121C_Ev  | 1           | 11.4      | 4.65     | 40.79    |
+| 040403040404040404  | 1           | 13.5      | 5.48     | 40.59    |
+| 020200201919181818  | 1           | 6.5       | 2.6      | 40.0     |
+| to22D_Night_23to05  | 2           | 7.9       | 2.96     | 38.46    |
+| 181919191918181818  | 1           | 7.9       | 3.03     | 38.35    |
+| 232222222121212020  | 1           | 9.3       | 3.51     | 37.74    |
+| 19181818181818C_Ev  | 1           | 26.8      | 10.0     | 37.31    |
+| 191919181819191919  | 2           | 6.85      | 2.5      | 37.22    |
+| 181818201818181818  | 1           | 11.4      | 4.23     | 37.11    |
+| 212121212121212120  | 1           | 8.6       | 3.17     | 36.86    |
+| 191920191919191919  | 1           | 8.6       | 3.17     | 36.86    |
+| 181818181918C_Even  | 1           | 5.8       | 2.11     | 36.38    |
+| 0000000000000000D_  | 1           | 14.9      | 5.35     | 35.91    |
+| ening_18to2212to17  | 1           | 24.7      | 8.84     | 35.79    |
+| 222019192221211918  | 1           | 9.3       | 3.31     | 35.59    |
+| 0505D_Night_23to05  | 2           | 16.3      | 5.75     | 35.44    |
+| 21C_Evening_18to22  | 2           | 11.4      | 3.8      | 35.34    |
+| 05Afternoon_12to17  | 2           | 42.55     | 11.06    | 34.8     |
+| 190022212121212020  | 1           | 6.5       | 2.25     | 34.62    |
+| 212121212121212021  | 3           | 28.37     | 7.75     | 34.42    |
+| 23232323232323D_Ni  | 1           | 12.8      | 4.39     | 34.3     |
+| 00D_Night_23to0517  | 3           | 10.93     | 3.71     | 34.11    |
+| 000000002323232323  | 1           | 9.3       | 3.15     | 33.87    |
+| 0018D_Night_23to05  | 1           | 5.8       | 1.96     | 33.79    |
+| 1820191918C_Evenin  | 1           | 10.7      | 3.59     | 33.55    |
+| 181818181819191918  | 1           | 21.2      | 7.11     | 33.54    |
+| 181818181818181818  | 39052       | 21.85     | 4.3      | 33.37    |
+| 232220201823222120  | 1           | 11.4      | 3.73     | 32.72    |
+| Night_23to05C_Even  | 3           | 9.3       | 3.05     | 32.7     |
+| 012323232222222121  | 1           | 10.7      | 3.44     | 32.15    |
+| to05ternoon_12to17  | 2           | 12.45     | 4.04     | 32.03    |
+| 000000000000002300  | 1           | 7.9       | 2.53     | 32.03    |
+| 201918182120201919  | 1           | 7.9       | 2.53     | 32.03    |
+| 181920192220191822  | 1           | 12.1      | 3.87     | 31.98    |
+| 192019191919191919  | 1           | 12.1      | 3.87     | 31.98    |
+| ing_18to22D_Night_  | 2           | 16.65     | 4.6      | 31.87    |
+| 191919191918191919  | 4           | 11.4      | 3.41     | 31.6     |
+| 181919191919191919  | 3           | 8.83      | 2.78     | 31.54    |
+| 04D_Night_23to0517  | 4           | 22.03     | 4.12     | 31.39    |
+| 010100002323222221  | 1           | 7.2       | 2.24     | 31.11    |
+| 000023232220201901  | 1           | 7.2       | 2.24     | 31.11    |
+| to05C_Evening_18to  | 2           | 10.7      | 3.34     | 31.1     |
+| 222221212121212121  | 1           | 19.8      | 6.15     | 31.06    |
+| 232323232323232322  | 2           | 12.8      | 3.92     | 31.06    |
+| 22D_Night_23to0517  | 1           | 8.6       | 2.67     | 31.05    |
+| 212121C_Evening_18  | 1           | 13.5      | 4.15     | 30.74    |
+| t_23to05C_Evening_  | 1           | 13.5      | 4.15     | 30.74    |
+| 010101010101010202  | 1           | 21.9      | 6.66     | 30.41    |
+| 181818191818C_Even  | 1           | 9.3       | 2.81     | 30.22    |
+| 191919181919191919  | 4           | 10.88     | 2.77     | 30.0     |
+| 03D_Night_23to05D_  | 1           | 8.6       | 2.52     | 29.3     |
+| 181818181918181818  | 23          | 19.06     | 5.23     | 29.25    |
+| 181818181818181918  | 23          | 17.23     | 4.41     | 29.0     |
+| 191919191819191819  | 1           | 16.3      | 4.71     | 28.9     |
+| 191919191919191918  | 9           | 12.96     | 3.15     | 28.76    |
+| 1918C_Evening_18to  | 1           | 17.0      | 4.85     | 28.53    |
+| 0202020202D_Night_  | 1           | 11.4      | 3.25     | 28.51    |
+| 05D_Night_23to05C_  | 3           | 10.23     | 3.02     | 28.45    |
+| 212020191919180201  | 1           | 34.5      | 9.81     | 28.43    |
+| 212018040303030202  | 1           | 15.6      | 4.42     | 28.33    |
+| 010101010023230101  | 1           | 40.1      | 11.36    | 28.33    |
+| 0404D_Night_23to05  | 1           | 11.4      | 3.23     | 28.33    |
+| 191919191919C_Even  | 1           | 35.9      | 10.16    | 28.3     |
+| 19191919C_Evening_  | 1           | 35.2      | 9.95     | 28.27    |
+| 212121202121212121  | 1           | 17.7      | 4.99     | 28.19    |
+| 181818181819181818  | 29          | 19.6      | 4.87     | 28.04    |
+| 191818181818181818  | 30          | 22.61     | 5.51     | 28.01    |
+| 222323232323232323  | 1           | 10.0      | 2.8      | 28.0     |
+| D_Night_23to05      | 3381555     | 20.51     | 4.33     | 27.9     |
+| 191919191818191919  | 1           | 12.1      | 3.37     | 27.85    |
+| 191818222220191923  | 1           | 7.2       | 2.0      | 27.78    |
+| 050505050505050505  | 4           | 24.0      | 2.99     | 27.75    |
+| 191919C_Evening_18  | 1           | 8.6       | 2.38     | 27.67    |
+| 191918191919191919  | 7           | 15.5      | 4.02     | 27.46    |
+| C_Evening_18to22    | 9575268     | 18.83     | 4.35     | 27.34    |
+| 05D_Night_23to0517  | 22          | 18.71     | 4.66     | 27.34    |
+| ening_18to22D_Nigh  | 5           | 11.54     | 2.57     | 27.25    |
+| 212121212121212121  | 222         | 21.25     | 4.2      | 26.97    |
+| 222222222222212222  | 1           | 14.2      | 3.79     | 26.69    |
+| 181818181818181819  | 22          | 26.75     | 6.07     | 26.55    |
+| 212120202020202020  | 1           | 14.9      | 3.95     | 26.51    |
+| 222121212121212121  | 1           | 21.9      | 5.8      | 26.48    |
+| 20C_Evening_18to22  | 2           | 17.35     | 5.11     | 26.43    |
+| B_Afternoon_12to17  | 11288961    | 20.67     | 4.52     | 26.15    |
+| 191919191919191919  | 1067        | 20.12     | 4.3      | 26.13    |
+| 222223222222222222  | 1           | 19.1      | 4.97     | 26.02    |
+| 181820202020202020  | 1           | 19.1      | 4.97     | 26.02    |
+| 2323232323232323D_  | 1           | 15.6      | 4.05     | 25.96    |
+| ght_23to05C_Evenin  | 1           | 13.5      | 3.5      | 25.93    |
+| 20202020202020C_Ev  | 2           | 8.25      | 2.12     | 25.86    |
+| 020202020202020201  | 1           | 16.3      | 4.2      | 25.77    |
+| 1818181918181818C_  | 1           | 25.4      | 6.53     | 25.71    |
+| 232322232323232323  | 2           | 38.7      | 10.06    | 25.7     |
+| 18C_Evening_18to22  | 640         | 20.1      | 4.45     | 25.65    |
++---------------------+-------------+-----------+----------+----------+
+|     time_of_day     | trip_count  | avg_fare  | avg_tip  | tip_pct  |
++---------------------+-------------+-----------+----------+----------+
+| 010000232323222222  | 1           | 17.0      | 4.35     | 25.59    |
+| 212120212121212121  | 1           | 17.0      | 4.35     | 25.59    |
+| 181918181818181818  | 24          | 21.48     | 4.54     | 25.57    |
+| 18181818C_Evening_  | 85          | 21.87     | 4.96     | 25.48    |
+| 201919191919191919  | 2           | 16.65     | 3.9      | 25.47    |
+| 040304040404040404  | 1           | 17.7      | 4.49     | 25.37    |
+| ght_23to05D_Night_  | 475         | 20.89     | 4.6      | 25.36    |
+| A_Morning_06to11    | 6622983     | 19.42     | 4.0      | 25.25    |
+| 21191818C_Evening_  | 1           | 18.4      | 4.63     | 25.16    |
+| 18181818181819C_Ev  | 1           | 18.4      | 4.63     | 25.16    |
+| 1818C_Evening_18to  | 283         | 20.5      | 4.37     | 25.14    |
+| 18181819C_Evening_  | 1           | 28.2      | 7.09     | 25.14    |
+| 181818191818181818  | 27          | 15.91     | 3.42     | 25.09    |
+| 232323232323232323  | 270         | 19.72     | 4.54     | 25.01    |
+| 232323232323222222  | 1           | 18.4      | 4.6      | 25.0     |
+| 222222222222222222  | 158         | 22.52     | 5.08     | 24.94    |
+| 191919191819191919  | 5           | 13.36     | 3.23     | 24.93    |
+| to05D_Night_23to05  | 475         | 20.72     | 4.59     | 24.93    |
+| 000000000000000023  | 1           | 19.1      | 4.75     | 24.87    |
+| 202020202020202020  | 339         | 18.35     | 3.95     | 24.86    |
+| 181818181818191818  | 29          | 24.66     | 5.59     | 24.85    |
+| 1818181818191818C_  | 1           | 70.0      | 17.34    | 24.77    |
+| 1818191818181818C_  | 1           | 70.0      | 17.34    | 24.77    |
+| 23to05D_Night_23to  | 474         | 21.45     | 4.42     | 24.71    |
+| 18181818181918C_Ev  | 1           | 16.3      | 4.0      | 24.54    |
+| 05C_Evening_18to22  | 2           | 13.5      | 3.32     | 24.39    |
+| 181818C_Evening_18  | 119         | 22.81     | 4.57     | 24.33    |
+| 1919C_Evening_18to  | 3           | 34.9      | 8.13     | 24.25    |
+| t_23to05D_Night_23  | 478         | 20.04     | 4.24     | 24.24    |
+| 1818181818C_Evenin  | 77          | 22.46     | 4.85     | 24.23    |
+| 222222222222C_Even  | 1           | 22.6      | 5.47     | 24.2     |
+| 202020202020C_Even  | 2           | 17.7      | 4.14     | 24.14    |
+| 1818181818181818C_  | 69          | 21.89     | 3.89     | 24.07    |
+| D_Night_23to05D_Ni  | 475         | 21.65     | 4.44     | 24.03    |
+| 18to22rnoon_12to17  | 2           | 15.25     | 3.9      | 24.0     |
+| 181818181818C_Even  | 71          | 20.41     | 3.94     | 23.98    |
+| 22D_Night_23to05D_  | 2           | 7.2       | 1.83     | 23.97    |
+| Night_23to05D_Nigh  | 474         | 20.65     | 4.25     | 23.92    |
+| 05D_Night_23to05D_  | 465         | 20.4      | 4.28     | 23.85    |
+| 212018180202010100  | 1           | 24.7      | 5.89     | 23.85    |
+| 202020202020201920  | 1           | 48.5      | 11.55    | 23.81    |
+| 010101010101010100  | 1           | 19.1      | 4.47     | 23.4     |
+| 1805C_Evening_18to  | 1           | 70.0      | 16.34    | 23.34    |
+| g_18to22C_Evening_  | 17061       | 23.73     | 4.45     | 23.31    |
+| ing_18to22C_Evenin  | 17022       | 23.93     | 4.45     | 23.31    |
+| 18to22C_Evening_18  | 17123       | 23.51     | 4.41     | 23.3     |
+| ening_18to22C_Even  | 16992       | 23.96     | 4.47     | 23.28    |
+| 010101010101010101  | 150         | 24.22     | 4.39     | 23.18    |
+| C_Evening_18to22C_  | 16922       | 23.81     | 4.45     | 23.16    |
+| to22C_Evening_18to  | 17210       | 23.56     | 4.4      | 23.02    |
+| 22C_Evening_18to22  | 17452       | 23.68     | 4.41     | 23.01    |
+| 191919191919191819  | 2           | 13.5      | 3.15     | 22.92    |
+| 18181818181818C_Ev  | 55          | 22.42     | 4.24     | 22.9     |
+| g_18to22D_Night_23  | 1           | 45.0      | 10.3     | 22.89    |
+| 191919191919191818  | 3           | 11.9      | 2.5      | 22.88    |
+| 010101010001010101  | 1           | 33.8      | 7.71     | 22.81    |
+| 181819181818181818  | 28          | 27.56     | 5.45     | 22.81    |
+| 040404040403040404  | 1           | 12.8      | 2.86     | 22.34    |
+| 201818C_Evening_18  | 1           | 17.7      | 3.84     | 21.69    |
+| C_Evening_18to2217  | 1           | 70.0      | 15.0     | 21.43    |
+| 000000000000000000  | 149         | 20.87     | 3.78     | 21.2     |
+| 19C_Evening_18to22  | 4           | 11.23     | 2.07     | 21.18    |
+| 040404040404040404  | 48          | 28.42     | 4.67     | 21.14    |
+| 1819C_Evening_18to  | 1           | 12.1      | 2.53     | 20.91    |
+| 201918232222212121  | 1           | 7.2       | 1.5      | 20.83    |
+| 030303030303030303  | 54          | 23.32     | 3.57     | 20.82    |
+| 191919191919181919  | 6           | 16.3      | 3.02     | 20.35    |
+| 040404040404040403  | 1           | 64.0      | 13.0     | 20.31    |
+| 181818181818191918  | 4           | 20.85     | 4.14     | 20.12    |
+| 23D_Night_23to05D_  | 2           | 6.5       | 1.3      | 20.0     |
+| 010101000101010101  | 4           | 8.95      | 1.71     | 19.97    |
+| 181819181818C_Even  | 1           | 25.4      | 5.0      | 19.69    |
+| 181818191918181818  | 1           | 5.1       | 1.0      | 19.61    |
+| 191918181818181818  | 6           | 34.67     | 7.44     | 19.43    |
+| 23to05C_Evening_18  | 2           | 12.8      | 1.48     | 19.42    |
+| 181919181818181818  | 2           | 52.0      | 8.69     | 19.17    |
+| D_Night_23to05C_Ev  | 2           | 5.8       | 1.1      | 18.97    |
+| 18D_Night_23to05C_  | 1           | 10.7      | 2.0      | 18.69    |
+| 010000232221212120  | 1           | 13.5      | 2.5      | 18.52    |
+| 23D_Night_23to0517  | 2           | 22.25     | 3.18     | 17.86    |
+| 181818181818181919  | 4           | 21.03     | 3.89     | 17.83    |
+| 020202020202020202  | 39          | 26.8      | 4.13     | 17.59    |
+| D_Night_23to05to17  | 3           | 27.03     | 1.91     | 17.43    |
+| 18181918C_Evening_  | 2           | 28.55     | 6.2      | 17.03    |
+| 020202010202020202  | 1           | 10.0      | 1.65     | 16.5     |
+| 191819191919191919  | 4           | 21.55     | 3.62     | 16.42    |
+| 191919192019191919  | 2           | 34.85     | 5.33     | 16.21    |
+| 040404040404030404  | 1           | 28.2      | 4.5      | 15.96    |
+| 2222D_Night_23to05  | 2           | 18.75     | 2.01     | 15.66    |
+| 2323D_Night_23to05  | 2           | 18.3      | 2.98     | 15.6     |
+| 191919191919181818  | 2           | 10.7      | 1.41     | 15.11    |
+| 2322212020191818D_  | 1           | 13.5      | 2.0      | 14.81    |
+| g_18to22oon_12to17  | 1           | 13.5      | 2.0      | 14.81    |
+| 040404040404030303  | 1           | 14.2      | 2.0      | 14.08    |
+| 191919191818181818  | 2           | 30.25     | 5.33     | 14.01    |
+| 192020202020202020  | 2           | 20.15     | 2.5      | 13.96    |
+| 191919191920191919  | 2           | 23.3      | 2.74     | 13.79    |
+| 191919181919181919  | 1           | 21.9      | 2.88     | 13.15    |
+| 181818181819191818  | 2           | 18.4      | 3.41     | 12.71    |
+| 202018212019222120  | 1           | 7.9       | 1.0      | 12.66    |
++---------------------+-------------+-----------+----------+----------+
+|     time_of_day     | trip_count  | avg_fare  | avg_tip  | tip_pct  |
++---------------------+-------------+-----------+----------+----------+
+| 18181919C_Evening_  | 1           | 32.4      | 3.96     | 12.22    |
+| 030205050505050505  | 1           | 9.3       | 1.0      | 10.75    |
+| 01010101D_Night_23  | 1           | 28.2      | 3.0      | 10.64    |
+| 201918C_Evening_18  | 1           | 12.1      | 1.25     | 10.33    |
+| C_Evening_18to22D_  | 4           | 35.2      | 1.75     | 9.76     |
+| 1919191919191919C_  | 1           | 10.7      | 1.0      | 9.35     |
+| 181818181919181818  | 2           | 191.3     | 1.0      | 7.41     |
+| 030303030303030302  | 1           | 28.9      | 2.0      | 6.92     |
+| 191919181818181818  | 1           | 21.2      | 1.0      | 4.72     |
+| 010101010101000000  | 1           | 18.4      | 0.0      | 0.0      |
+| 212121202020202020  | 1           | 33.1      | 0.0      | 0.0      |
+| 020202020201020202  | 1           | 33.8      | 0.0      | 0.0      |
+| 00000000000000D_Ni  | 1           | 74.5      | 0.0      | 0.0      |
+| 182018181818181818  | 1           | 10.0      | 0.0      | 0.0      |
+| 02D_Night_23to0517  | 1           | 23.3      | 0.0      | 0.0      |
+| 2020202020202020C_  | 1           | 18.5      | 0.0      | 0.0      |
++---------------------+-------------+-----------+----------+----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
