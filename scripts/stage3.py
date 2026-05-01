@@ -31,9 +31,9 @@ from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 
 import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # pylint: disable=wrong-import-position
 
 # ── Argument parsing ───────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Stage 3: Spark ML pipeline")
@@ -42,12 +42,30 @@ parser.add_argument("--models-dir", default="models",  help="Where to save train
 parser.add_argument("--output-dir", default="output",  help="Where to save results")
 args = parser.parse_args()
 
-DATA_DIR   = os.path.abspath(args.data_dir)
-MODELS_DIR = os.path.abspath(args.models_dir)
-OUTPUT_DIR = os.path.abspath(args.output_dir)
+def _resolve_path(raw_path):
+    """Keep HDFS URIs unchanged; resolve local paths to absolute."""
+    if raw_path.startswith("hdfs://") or raw_path.startswith("hdfs:///"):
+        return raw_path
+    return os.path.abspath(raw_path)
 
-os.makedirs(MODELS_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+def _path_join(base, *parts):
+    """Join paths correctly for both local FS and HDFS URIs."""
+    if base.startswith("hdfs://") or base.startswith("hdfs:///"):
+        return base.rstrip("/") + "/" + "/".join(parts)
+    return os.path.join(base, *parts)
+
+
+DATA_DIR = _resolve_path(args.data_dir)
+MODELS_DIR = _resolve_path(args.models_dir)
+OUTPUT_DIR = _resolve_path(args.output_dir)
+
+if not DATA_DIR.startswith("hdfs"):
+    os.makedirs(DATA_DIR, exist_ok=True)
+if not MODELS_DIR.startswith("hdfs"):
+    os.makedirs(MODELS_DIR, exist_ok=True)
+if not OUTPUT_DIR.startswith("hdfs"):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── Spark Session ──────────────────────────────────────────────────────────
 spark = (
@@ -60,7 +78,7 @@ spark.sparkContext.setLogLevel("WARN")
 print(f"Spark {spark.version} | data={DATA_DIR}")
 
 # ── Load data ──────────────────────────────────────────────────────────────
-raw_df = spark.read.parquet(os.path.join(DATA_DIR, "yellow_tripdata_2025-*.parquet"))
+raw_df = spark.read.parquet(_path_join(DATA_DIR, "yellow_tripdata_2025-*.parquet"))
 print(f"Raw records: {raw_df.count():,}")
 
 # ── Feature engineering ────────────────────────────────────────────────────
@@ -73,10 +91,10 @@ FEATURE_COLS = [
 ]
 
 
-def engineer_features(df):
+def engineer_features(dataframe):
     """Add derived columns and binary label (generous tip = tip > 20% of fare)."""
     return (
-        df
+        dataframe
         .filter(F.col("payment_type") == 1)
         .filter(F.col("fare_amount") > 0)
         .filter(F.col("trip_distance") > 0)
@@ -176,7 +194,7 @@ rf_cv = CrossValidator(
 )
 rf_best, rf_auroc, rf_aupr = evaluate_and_save(
     rf_cv.fit(train_df), "RandomForest",
-    os.path.join(MODELS_DIR, "random_forest_model"),
+    _path_join(MODELS_DIR, "random_forest_model"),
 )
 rf_stage = rf_best.stages[-1]
 results["RandomForest"] = {
@@ -197,7 +215,7 @@ ax.barh(fi["feature"][:15][::-1], fi["importance"][:15][::-1], color="steelblue"
 ax.set_xlabel("Importance")
 ax.set_title("Random Forest — Feature Importances")
 plt.tight_layout()
-fig.savefig(os.path.join(OUTPUT_DIR, "rf_feature_importance.png"), dpi=150)
+fig.savefig(_path_join(OUTPUT_DIR, "rf_feature_importance.png"), dpi=150)
 plt.close(fig)
 
 # ── Model 2: GBT ──────────────────────────────────────────────────────────
@@ -220,7 +238,7 @@ gbt_cv = CrossValidator(
 )
 gbt_best, gbt_auroc, gbt_aupr = evaluate_and_save(
     gbt_cv.fit(train_df), "GBT",
-    os.path.join(MODELS_DIR, "gbt_model"),
+    _path_join(MODELS_DIR, "gbt_model"),
 )
 gbt_stage = gbt_best.stages[-1]
 results["GBT"] = {
@@ -243,7 +261,7 @@ ax.barh(gbt_fi["feature"][:15][::-1], gbt_fi["importance"][:15][::-1], color="da
 ax.set_xlabel("Importance")
 ax.set_title("GBT — Feature Importances")
 plt.tight_layout()
-fig.savefig(os.path.join(OUTPUT_DIR, "gbt_feature_importance.png"), dpi=150)
+fig.savefig(_path_join(OUTPUT_DIR, "gbt_feature_importance.png"), dpi=150)
 plt.close(fig)
 
 # ── Model 3: Logistic Regression ───────────────────────────────────────────
@@ -266,7 +284,7 @@ lr_cv = CrossValidator(
 )
 lr_best, lr_auroc, lr_aupr = evaluate_and_save(
     lr_cv.fit(train_df), "LogisticRegression",
-    os.path.join(MODELS_DIR, "logistic_regression_model"),
+    _path_join(MODELS_DIR, "logistic_regression_model"),
 )
 lr_stage = lr_best.stages[-1]
 results["LogisticRegression"] = {
@@ -291,7 +309,7 @@ print(comp.to_string(index=False))
 best_name = comp.iloc[0]["Model"]
 print(f"\nBest model: {best_name}")
 
-comp.to_csv(os.path.join(OUTPUT_DIR, "stage3_model_comparison.csv"), index=False)
+comp.to_csv(_path_join(OUTPUT_DIR, "stage3_model_comparison.csv"), index=False)
 
 colors = ["steelblue", "darkorange", "seagreen"]
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -304,7 +322,7 @@ for i, metric in enumerate(["AUROC", "AUPR"]):
         axes[i].text(j, v + 0.005, f"{v:.4f}", ha="center", fontsize=9)
 plt.suptitle("NYC Taxi Tip Classification — Model Comparison", fontsize=13, fontweight="bold")
 plt.tight_layout()
-fig.savefig(os.path.join(OUTPUT_DIR, "model_comparison.png"), dpi=150)
+fig.savefig(_path_join(OUTPUT_DIR, "model_comparison.png"), dpi=150)
 plt.close(fig)
 
 # ── Single-sample prediction ───────────────────────────────────────────────
@@ -339,7 +357,7 @@ out = {
 out["best_model"] = best_name
 out["sample_prediction"] = {"label": int(pred_row["prediction"]), "prob_generous_tip": prob_gen}
 
-with open(os.path.join(OUTPUT_DIR, "stage3_results.json"), "w", encoding="utf-8") as fh:
+with open(_path_join(OUTPUT_DIR, "stage3_results.json"), "w", encoding="utf-8") as fh:
     json.dump(out, fh, indent=2)
 
 print(f"\nAll outputs saved to {OUTPUT_DIR}/")

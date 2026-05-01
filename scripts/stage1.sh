@@ -68,6 +68,7 @@ echo "Extract Avro schema from first part file (requires fastavro) …"
 PART_FILE=$(hdfs dfs -ls "${WAREHOUSE}/yellow_taxi_trips" 2>/dev/null | grep '\.avro$' | head -1 | awk '{print $NF}' || true)
 if [[ -n "${PART_FILE}" ]]; then
   SAMPLE="output/_sample_yellow_taxi_trips.avro"
+  rm -f "${SAMPLE}"
   hdfs dfs -get "${PART_FILE}" "${SAMPLE}"
   python3 - <<'PY'
 import json

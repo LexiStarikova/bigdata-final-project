@@ -107,12 +107,12 @@ def _normalize_frame(raw: pd.DataFrame) -> pd.DataFrame:
         if src is None and target == "airport_fee":
             src = col_map.get("airport_fee") or col_map.get("airportfee")
         if src is None:
-            out[target] = pd.NA
+            out[target] = None
         else:
             out[target] = raw[src]
-    for ts in ("tpep_pickup_datetime", "tpep_dropoff_datetime"):
-        if ts in out.columns:
-            out[ts] = pd.to_datetime(out[ts], errors="coerce").dt.tz_localize(None)
+    for time_col in ("tpep_pickup_datetime", "tpep_dropoff_datetime"):
+        if time_col in out.columns:
+            out[time_col] = pd.to_datetime(out[time_col], errors="coerce").dt.tz_localize(None)
     for col in out.columns:
         if col not in ("tpep_pickup_datetime", "tpep_dropoff_datetime", "store_and_fwd_flag"):
             out[col] = pd.to_numeric(out[col], errors="coerce")
@@ -182,14 +182,14 @@ def main() -> None:
     sql_dir = root / "sql"
     with _connect(root) as conn:
         cur = conn.cursor()
-        with open(sql_dir / "create_tables.sql", encoding="utf-8") as fh:
-            cur.execute(fh.read())
+        with open(sql_dir / "create_tables.sql", encoding="utf-8") as sql_file:
+            cur.execute(sql_file.read())
         conn.commit()
         cur.close()
         load_parquet_to_postgres(conn, root)
         cur = conn.cursor()
-        with open(sql_dir / "test_database.sql", encoding="utf-8") as fh:
-            for line in fh:
+        with open(sql_dir / "test_database.sql", encoding="utf-8") as sql_file:
+            for line in sql_file:
                 line = line.strip()
                 if not line or line.startswith("--"):
                     continue
