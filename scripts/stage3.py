@@ -12,8 +12,6 @@ Outputs (aligned with BS/MS Stage III checklist):
 # Whole-stage script: keep sequential ML steps explicit for reproducibility reports.
 # pylint: disable=too-many-locals,too-many-statements,too-many-arguments,too-many-positional-arguments,missing-function-docstring
 
-from __future__ import annotations
-
 import argparse
 import glob
 import json
@@ -21,6 +19,7 @@ import math
 import os
 import shutil
 
+from pyspark import StorageLevel
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DoubleType
@@ -68,6 +67,14 @@ def parse_args():
     return parser.parse_args()
 
 
+def _remote_data_uri(data_dir: str) -> bool:
+    """True for hdfs:, s3a:, wasb:, etc. Python glob cannot enumerate these."""
+    if "://" not in data_dir:
+        return False
+    lowered = data_dir.lower()
+    return not lowered.startswith("file:")
+
+
 def discover_parquet(data_dir: str):
     shallow = sorted(glob.glob(os.path.join(data_dir, "yellow_tripdata_*.parquet")))
     nested = sorted(
@@ -84,9 +91,17 @@ def discover_parquet(data_dir: str):
 
 
 def load_raw(spark, data_dir: str):
+    data_dir = data_dir.rstrip("/")
+
+    # Single directory/glob URI on HDFS/ObjectStore — bypass os glob (POSIX-only).
+    if _remote_data_uri(data_dir):
+        return spark.read.option("mergeSchema", "true").parquet(data_dir)
+
     parquet_paths = discover_parquet(data_dir)
     if parquet_paths:
-        return spark.read.option("mergeSchema", "true").parquet(parquet_paths)
+        # PySpark expects path(s) as *args, not one list; passing a list triggers
+        # ClassCastException (ArrayList vs String) inside HadoopConf setup on some Spark builds.
+        return spark.read.option("mergeSchema", "true").parquet(*parquet_paths)
 
     csv_patterns = (
         os.path.join(data_dir, "yellow*.csv"),
@@ -100,9 +115,13 @@ def load_raw(spark, data_dir: str):
             acc = acc.unionByName(nxt, allowMissingColumns=True)
         return acc
 
+    display_dir = (
+        data_dir if _remote_data_uri(data_dir) else os.path.abspath(data_dir)
+    )
     raise FileNotFoundError(
-        f"No parquet/CSV trip files under {os.path.abspath(data_dir)!r}. "
-        "Place TLC Yellow files here or run scripts/make_stage3_sample_parquet.py"
+        f"No parquet/CSV trip files under {display_dir!r}. "
+        "Place TLC Yellow files here, run scripts/make_stage3_sample_parquet.py "
+        "(local), or use an HDFS/YARN path.",
     )
 
 
@@ -274,7 +293,10 @@ def main():
 
     spark_builder = SparkSession.builder.appName("yellow_taxi_stage3_tip_reg").config(
         "spark.sql.shuffle.partitions",
-        os.environ.get("SPARK_SQL_SHUFFLE_PARTITIONS", "64"),
+        os.environ.get("SPARK_SQL_SHUFFLE_PARTITIONS", "200"),
+    ).config(
+        "spark.sql.adaptive.enabled",
+        os.environ.get("SPARK_SQL_ADAPTIVE_ENABLED", "true"),
     )
     if args.master:
         spark_builder = spark_builder.master(args.master)
@@ -290,17 +312,24 @@ def main():
 
     ml_ready = engineer_features(raw).withColumnRenamed("tip_amount", "label")
     feats = [c for c in ml_ready.columns if c != "label"]
-    ml_ready = ml_ready.select(*feats, "label").cache()
+    ml_ready = ml_ready.select(*feats, "label")
 
-    n = ml_ready.count()
+    # Avoid MEMORY_ONLY .cache() stacking on the driver (OOM / process "Killed"):
+    # spill to disk when heap is tight; drop the pre-split frame once train/test exist.
+    md = StorageLevel.MEMORY_AND_DISK
+    ml_ready = ml_ready.persist(md)
+
+    train_df, test_df = ml_ready.randomSplit([0.7, 0.3], seed=args.random_seed)
+    train_df = train_df.persist(md)
+    test_df = test_df.persist(md)
+
+    train_n = train_df.count()
+    test_n = test_df.count()
+    n = train_n + test_n
     if n == 0:
         raise RuntimeError("Empty dataframe after preprocessing (check filters/input).")
 
-    train_df, test_df = ml_ready.randomSplit([0.7, 0.3], seed=args.random_seed)
-    train_df.cache()
-    test_df.cache()
-
-    train_n, test_n = train_df.count(), test_df.count()
+    ml_ready.unpersist(blocking=True)
     print(f"[stage3] rows={n:,} train={train_n:,} test={test_n:,} features={len(feats)}")
 
     cv_evaluator = RegressionEvaluator(
