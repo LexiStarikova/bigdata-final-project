@@ -2,12 +2,15 @@
 #
 # Stage 3 — Predictive Analytics (Spark ML regression for tip_amount).
 #
-# Default on cluster gateways (hostname *hadoop*): submit to YARN and read
-# hdfs:///user/$USER/taxi/data — even if the repo also has small Parquet copies
-# under ./data (those would otherwise force local[*] and OOM the gateway).
+# Cluster (hostname *hadoop*): submits to YARN and by default reads Stage II Hive table
+#   team35_projectdb.yellow_taxi_trips_part_buck (sql/db.hql). Override DB/table with env or
+#   extra args appended after scripts/stage3.sh -- ...
 #
-# Laptop / offline: keep Parquet under ./data and do NOT set STAGE3_USE_YARN;
-#     or run with STAGE3_FORCE_LOCAL=1.
+# Parquet TLC path fallback: STAGE3_USE_PARQUET_DIR=1 (uses STAGE3_HDFS_DATA_DIR or taxi/data).
+#
+# Warehouse aligns with CREATE DATABASE LOCATION in sql/db.hql (project/hive/warehouse → HDFS).
+#
+# Laptop/offline: local Parquet under ./data/stage3_sample or FORCE_LOCAL — no Yarn.
 #
 
 set -euo pipefail
@@ -74,15 +77,35 @@ if [[ -z "${HADOOP_CONF_DIR:-}" && -z "${YARN_CONF_DIR:-}" ]]; then
   exit 2
 fi
 
+STAGE3_HIVE_DATABASE="${STAGE3_HIVE_DATABASE:-team35_projectdb}"
+STAGE3_HIVE_TABLE="${STAGE3_HIVE_TABLE:-yellow_taxi_trips_part_buck}"
+
+PYTHON_ARGS=(
+  "${SCRIPT}"
+  --models-dir "${ROOT_DIR}/models"
+  --output-dir "${ROOT_DIR}/output"
+)
+
+if [[ -z "${STAGE3_USE_PARQUET_DIR:-}" ]]; then
+  export SPARK_SQL_WAREHOUSE_DIR="${SPARK_SQL_WAREHOUSE_DIR:-hdfs:///user/${REMOTE_USER}/project/hive/warehouse}"
+  PYTHON_ARGS+=(
+    --hive-database "${STAGE3_HIVE_DATABASE}"
+    --hive-table "${STAGE3_HIVE_TABLE}"
+  )
+else
+  PYTHON_ARGS+=(
+    --data-dir "${STAGE3_HDFS_DATA_DIR:-hdfs:///user/${REMOTE_USER}/taxi/data}"
+  )
+fi
+
+export STAGE3_CV_PARALLELISM="${STAGE3_CV_PARALLELISM:-1}"
+
 exec spark-submit \
   --master yarn \
   --deploy-mode "${STAGE3_DEPLOY:-client}" \
   --num-executors "${STAGE3_EXECUTORS:-4}" \
-  --executor-memory "${STAGE3_EXEC_MEM:-4g}" \
+  --executor-memory "${STAGE3_EXEC_MEM:-8g}" \
   --executor-cores "${STAGE3_CORES:-2}" \
-  --driver-memory "${STAGE3_DRIVER_MEM:-8g}" \
-  "${SCRIPT}" \
-  --data-dir "${STAGE3_HDFS_DATA_DIR:-hdfs:///user/${REMOTE_USER}/taxi/data}" \
-  --models-dir "${ROOT_DIR}/models" \
-  --output-dir "${ROOT_DIR}/output" \
+  --driver-memory "${STAGE3_DRIVER_MEM:-12g}" \
+  "${PYTHON_ARGS[@]}" \
   "$@"

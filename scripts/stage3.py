@@ -4,6 +4,24 @@ Stage 3 — Predictive Data Analytics (Spark ML regression).
 Predict NYC Yellow Taxi trip tip_amount (credit-card trips). Two regressors tuned
 via CrossValidator + ParamGridBuilder on train only; metrics on held-out test.
 
+Stage II compatibility (sql/db.hql):
+  - Hive DB: team35_projectdb (default; override via --hive-database).
+  - Table: yellow_taxi_trips_part_buck (partitioned Avro); base yellow_taxi_trips is dropped.
+  - Timestamps stored as BIGINT epoch milliseconds — coerced before feature engineering.
+
+On large Hive tables (>~10M rows): keep StandardScaler withMean=false (default). withMean=true
+forces dense vectors and often OOMs the Spark driver during CV unless RAM is huge.
+Use STAGE3_DRIVER_MEM / executor memory and STAGE3_CV_PARALLELISM if the gateway is tight.
+On congested Yarn hosts, Executor Process Lost + ``Killed`` almost always indicates container RAM:
+pass STAGE3_YARN_STABLE=1 / STAGE3_EXEC_MEMORY_OVERHEAD (see scripts/stage3.sh) and optional
+``STAGE3_RF_LITE=1`` for a smaller RandomForest CV grid without changing LR.
+
+On YARN, default fs is usually HDFS — writes to UNIX paths such as /home/user/... are resolved on
+HDFS and fail unless you explicitly use file:// staging. CSV and model dirs are staged under
+hdfs:///user/$USER/project/stage3_scratch (override STAGE3_HDFS_SCRATCH), then pulled with
+``hdfs dfs -getmerge`` / ``hdfs dfs -get`` for model dirs (recursive; no ``-r`` on ``-get``).
+Set ``STAGE3_LOCAL_WRITES_ONLY=1`` when the ``hdfs`` CLI is unavailable.
+
 Outputs (aligned with BS/MS Stage III checklist):
   output/model1_predictions.csv — label,prediction
   output/model2_predictions.csv — label,prediction
@@ -18,6 +36,8 @@ import json
 import math
 import os
 import shutil
+import subprocess
+import uuid
 
 from pyspark import StorageLevel
 from pyspark.sql import SparkSession
@@ -30,6 +50,14 @@ from pyspark.ml.feature import Imputer, StandardScaler, VectorAssembler
 from pyspark.ml.regression import LinearRegression, RandomForestRegressor
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 
+# Stage II hive column aliases (snake/lowercase → TLC-style names engineer_features expects)
+STAGE2_TO_TLC_COLUMNS = (
+    ("vendorid", "VendorID"),
+    ("ratecodeid", "RatecodeID"),
+    ("pulocationid", "PULocationID"),
+    ("dolocationid", "DOLocationID"),
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -38,7 +66,7 @@ def parse_args():
     parser.add_argument(
         "--data-dir",
         default="data",
-        help="Directory containing trip parquet/csv files",
+        help="POSIX or HDFS path with TLC Parquet/CSV (ignored when --hive-table is set).",
     )
     parser.add_argument(
         "--models-dir",
@@ -53,7 +81,7 @@ def parse_args():
     parser.add_argument(
         "--master",
         default=os.environ.get("SPARK_MASTER"),
-        help="Spark master (e.g. local[*]); SPARK_MASTER env if unset arg",
+        help="Spark master (e.g. local[*]); SparkSubmit may omit this on Yarn.",
     )
     parser.add_argument(
         "--sample-fraction",
@@ -62,17 +90,102 @@ def parse_args():
         help="Optional 0<s<=1 uniform sample BEFORE filters for quick debugging",
     )
     parser.add_argument("--cv-folds", type=int, default=3)
-    parser.add_argument("--parallelism", type=int, default=2)
+    parser.add_argument(
+        "--parallelism",
+        type=int,
+        default=int(os.environ.get("STAGE3_CV_PARALLELISM", "1")),
+        help=(
+            "CrossValidator concurrent folds (1 = lowest peak memory). "
+            "Env STAGE3_CV_PARALLELISM."
+        ),
+    )
     parser.add_argument("--random-seed", type=int, default=42)
+    parser.add_argument(
+        "--scaler-with-mean",
+        action="store_true",
+        help=(
+            "StandardScaler centers features → dense vectors (~8 bytes × n_rows × dim). "
+            "Do not enable on tens of millions of rows unless driver has ample RAM "
+            "(or set STAGE3_SCALER_WITH_MEAN=1)."
+        ),
+    )
+    parser.add_argument(
+        "--hive-database",
+        default=os.environ.get("STAGE3_HIVE_DATABASE"),
+        help=(
+            "Stage II Hive DB (team35_projectdb in sql/db.hql). Used with --hive-table."
+        ),
+    )
+    parser.add_argument(
+        "--hive-table",
+        default=os.environ.get("STAGE3_HIVE_TABLE"),
+        help=(
+            "If set, read Hive table (default after Stage II: yellow_taxi_trips_part_buck)."
+        ),
+    )
     return parser.parse_args()
 
 
-def _remote_data_uri(data_dir: str) -> bool:
-    """True for hdfs:, s3a:, wasb:, etc. Python glob cannot enumerate these."""
-    if "://" not in data_dir:
+def _remote_data_uri(path: str) -> bool:
+    trimmed = path.strip().lower()
+    if trimmed.startswith("file:"):
         return False
-    lowered = data_dir.lower()
-    return not lowered.startswith("file:")
+    if "://" in path:
+        return True
+    return any(trimmed.startswith(s) for s in ("hdfs:", "s3:", "s3a:", "wasb:", "abfs:", "viewfs:"))
+
+
+def _normalize_hdfs_uri_for_spark(uri: str) -> str:
+    if not uri.startswith("hdfs:"):
+        return uri
+    tail = uri[len("hdfs:") :]
+    if tail.startswith("/") and not tail.startswith("//"):
+        return "hdfs://" + tail
+    return uri
+
+
+def resolve_filesystem_data_dir(arg: str) -> str:
+    p = arg.rstrip("/")
+    return p if _remote_data_uri(p) else os.path.abspath(p)
+
+
+def hive_table_qualifier(database, table):
+    if not table:
+        return None
+    db = database
+    tbl = table
+    if db:
+        if "." in tbl:
+            raise ValueError(
+                "Use (--hive-database + short table) or qualified --hive-table, not both.",
+            )
+        return f"{db}.{tbl.strip()}"
+    if "." in tbl:
+        parts = tbl.split(".", 1)
+        return f"{parts[0].strip()}.{parts[1].strip()}"
+    return tbl.strip()
+
+
+def build_spark_session(args):
+    builder = SparkSession.builder.appName("yellow_taxi_stage3_tip_reg").config(
+        "spark.sql.shuffle.partitions",
+        os.environ.get("SPARK_SQL_SHUFFLE_PARTITIONS", "200"),
+    ).config(
+        "spark.sql.adaptive.enabled",
+        os.environ.get("SPARK_SQL_ADAPTIVE_ENABLED", "true"),
+    )
+    if args.master:
+        builder = builder.master(args.master)
+    if args.hive_table:
+        metastore = os.environ.get(
+            "HIVE_METASTORE_URIS",
+            "thrift://hadoop-02.uni.innopolis.ru:9883",
+        )
+        builder = builder.enableHiveSupport().config("hive.metastore.uris", metastore)
+        warehouse = os.environ.get("SPARK_SQL_WAREHOUSE_DIR")
+        if warehouse:
+            builder = builder.config("spark.sql.warehouse.dir", warehouse)
+    return builder.getOrCreate()
 
 
 def discover_parquet(data_dir: str):
@@ -83,7 +196,6 @@ def discover_parquet(data_dir: str):
     paths = sorted({*shallow, *nested})
     if paths:
         return paths
-
     fuzzy = sorted(
         glob.glob(os.path.join(data_dir, "**", "yellow*trip*.parquet"), recursive=True),
     )
@@ -93,14 +205,12 @@ def discover_parquet(data_dir: str):
 def load_raw(spark, data_dir: str):
     data_dir = data_dir.rstrip("/")
 
-    # Single directory/glob URI on HDFS/ObjectStore — bypass os glob (POSIX-only).
     if _remote_data_uri(data_dir):
-        return spark.read.option("mergeSchema", "true").parquet(data_dir)
+        hdfs_uri = _normalize_hdfs_uri_for_spark(data_dir)
+        return spark.read.option("mergeSchema", "true").parquet(hdfs_uri)
 
     parquet_paths = discover_parquet(data_dir)
     if parquet_paths:
-        # PySpark expects path(s) as *args, not one list; passing a list triggers
-        # ClassCastException (ArrayList vs String) inside HadoopConf setup on some Spark builds.
         return spark.read.option("mergeSchema", "true").parquet(*parquet_paths)
 
     csv_patterns = (
@@ -115,26 +225,79 @@ def load_raw(spark, data_dir: str):
             acc = acc.unionByName(nxt, allowMissingColumns=True)
         return acc
 
-    display_dir = (
-        data_dir if _remote_data_uri(data_dir) else os.path.abspath(data_dir)
-    )
+    display = data_dir if _remote_data_uri(data_dir) else os.path.abspath(data_dir)
     raise FileNotFoundError(
-        f"No parquet/CSV trip files under {display_dir!r}. "
-        "Place TLC Yellow files here, run scripts/make_stage3_sample_parquet.py "
-        "(local), or use an HDFS/YARN path.",
+        f"No parquet/CSV under {display!r}. For Stage II Hive use "
+        "--hive-database + --hive-table yellow_taxi_trips_part_buck.",
     )
+
+
+def unify_stage2_columns(raw_df):
+    """Rename Stage II lowercase Avro cols to TLC-style names."""
+    lowers = {c.lower(): c for c in raw_df.columns}
+    out = raw_df
+    for stage2_low, tlc_name in STAGE2_TO_TLC_COLUMNS:
+        if tlc_name in out.columns:
+            continue
+        if stage2_low in lowers and lowers[stage2_low] != tlc_name:
+            out = out.withColumnRenamed(lowers[stage2_low], tlc_name)
+    return out
+
+
+def coerce_epoch_ms_pickup_dropoff(raw_df):
+    """sql/db.hql stores pickup/dropoff as BIGINT millis; parquet TLC uses TIMESTAMP."""
+
+    def needs_ms_to_ts(typ: str) -> bool:
+        t = typ.lower().split("(")[0].strip()
+        if t == "timestamp":
+            return False
+        return t in ("bigint", "long", "int", "smallint", "short", "double", "float", "decimal")
+
+    dtypes = dict(raw_df.dtypes)
+    out = raw_df
+    lowmap = {c.lower(): c for c in out.columns}
+
+    def pick(alias):
+        for key in alias:
+            if key in lowmap:
+                return lowmap[key]
+        return None
+
+    pu_col = pick(("tpep_pickup_datetime",))
+    do_col = pick(("tpep_dropoff_datetime",))
+    if not pu_col or not do_col:
+        raise ValueError("Expected tpep_pickup_datetime and tpep_dropoff_datetime columns.")
+
+    pu_type = dtypes.get(pu_col, "")
+    if needs_ms_to_ts(pu_type):
+        out = out.withColumn(
+            pu_col,
+            F.to_timestamp(F.col(pu_col).cast("double") / F.lit(1000.0)),
+        )
+
+    do_type = dtypes.get(do_col, "")
+    if needs_ms_to_ts(do_type):
+        out = out.withColumn(
+            do_col,
+            F.to_timestamp(F.col(do_col).cast("double") / F.lit(1000.0)),
+        )
+
+    return out
 
 
 def engineer_features(raw_df):
     """Regression target tip_amount with cyclical time encodings."""
+    df0 = unify_stage2_columns(raw_df)
+    df0 = coerce_epoch_ms_pickup_dropoff(df0)
+
     req = {"tpep_pickup_datetime", "tpep_dropoff_datetime", "payment_type"}
-    if req - set(raw_df.columns):
-        raise ValueError(f"Missing columns: {sorted(req - set(raw_df.columns))}")
+    if req - set(df0.columns):
+        raise ValueError(f"Missing columns after coercion: {sorted(req - set(df0.columns))}")
 
     tau = F.lit(2.0 * math.pi)
 
     df = (
-        raw_df.filter(F.col("payment_type") == F.lit(1))
+        df0.filter(F.col("payment_type") == F.lit(1))
         .filter(F.col("fare_amount") > F.lit(0))
         .filter(F.col("trip_distance") > F.lit(0))
         .filter(F.col("tip_amount") >= F.lit(0))
@@ -206,22 +369,103 @@ def engineer_features(raw_df):
     return df.select(*(use + ["tip_amount"]))
 
 
+def load_hive_table(spark, database, table):
+    qual = hive_table_qualifier(database, table)
+    if not qual:
+        raise ValueError("Hive loading needs --hive-table (and optional --hive-database).")
+    return spark.table(qual)
+
+
+def _hdfs_scratch_base():
+    linux_user = os.environ.get("USER", os.environ.get("LOGNAME", "user"))
+    default_scratch = f"hdfs:///user/{linux_user}/project/stage3_scratch"
+    return os.environ.get("STAGE3_HDFS_SCRATCH", default_scratch).rstrip("/")
+
+
+def _use_hdfs_for_writes():
+    if os.environ.get("STAGE3_LOCAL_WRITES_ONLY", "").lower() in ("1", "true", "yes"):
+        return False
+    return shutil.which("hdfs") is not None
+
+
+def _hdfs_dfs(args):
+    subprocess.check_call(["hdfs", "dfs"] + list(args))
+
+
+def _local_file_uri(abs_path):
+    """Force local FS when cluster default FS is hdfs (client-side paths only)."""
+    return "file://" + os.path.abspath(abs_path)
+
+
 def write_single_partition_csv(frame, outfile: str):
-    out_dir = outfile + "__tmp_parts"
-    if os.path.isdir(out_dir):
-        shutil.rmtree(out_dir)
-    frame.coalesce(1).write.mode("overwrite").option("header", "true").csv(out_dir)
-    parts = sorted(glob.glob(os.path.join(out_dir, "part-*.csv")))
-    if not parts:
-        shutil.rmtree(out_dir, ignore_errors=True)
-        raise RuntimeError(f"No CSV part files emitted under {out_dir!r}")
-    parent = os.path.dirname(os.path.abspath(outfile))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    if os.path.isfile(outfile):
-        os.remove(outfile)
-    shutil.move(parts[0], outfile)
-    shutil.rmtree(out_dir, ignore_errors=True)
+    """
+    Yarn + fs.defaultFS=hdfs: unix paths resolve on HDFS and break (Permission denied /).
+    Write to hdfs:///user/... staging, then hdfs dfs -getmerge to repo output/.
+    Fallback: plain local dirs + file:/// if STAGE3_LOCAL_WRITES_ONLY or no hdfs CLI.
+    """
+    final_path = os.path.abspath(outfile)
+    parent_dir = os.path.dirname(final_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    if _use_hdfs_for_writes():
+        staging_dir = f"{_hdfs_scratch_base()}/csv_{uuid.uuid4().hex}"
+        frame.coalesce(1).write.mode("overwrite").option("header", "true").csv(staging_dir)
+        if os.path.isfile(final_path):
+            os.remove(final_path)
+        try:
+            _hdfs_dfs(["-getmerge", staging_dir, final_path])
+        finally:
+            try:
+                _hdfs_dfs(["-rm", "-r", "-f", staging_dir])
+            except subprocess.CalledProcessError:
+                pass
+        return
+
+    tmp_parts = final_path + "__tmp_parts"
+    shutil.rmtree(tmp_parts, ignore_errors=True)
+    frame.coalesce(1).write.mode("overwrite").option(
+        "header", "true"
+    ).csv(_local_file_uri(tmp_parts))
+    globbed = sorted(glob.glob(os.path.join(tmp_parts, "part-*.csv")))
+    if not globbed:
+        shutil.rmtree(tmp_parts, ignore_errors=True)
+        raise RuntimeError(f"No CSV part files under {_local_file_uri(tmp_parts)!r}")
+    if os.path.isfile(final_path):
+        os.remove(final_path)
+    shutil.move(globbed[0], final_path)
+    shutil.rmtree(tmp_parts, ignore_errors=True)
+
+
+def save_ml_pipeline_local(pipeline_model, models_root: str, name: str):
+    """
+    Persist PipelineModel under models_root/name on the gateway filesystem.
+    On Yarn-default-HDFS clusters, stage under hdfs:///user/... then hdfs dfs -get (recursive dirs).
+    """
+    models_root_abs = os.path.abspath(models_root)
+    local_dest = os.path.join(models_root_abs, name)
+
+    if _use_hdfs_for_writes():
+        staging = f"{_hdfs_scratch_base()}/ml_{uuid.uuid4().hex}"
+        pipeline_model.write().overwrite().save(staging)
+        try:
+            if os.path.isdir(local_dest):
+                shutil.rmtree(local_dest)
+            elif os.path.isfile(local_dest):
+                os.remove(local_dest)
+            parent = os.path.dirname(local_dest.rstrip(os.sep))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            _hdfs_dfs(["-get", staging, local_dest])
+        finally:
+            try:
+                _hdfs_dfs(["-rm", "-r", "-f", staging])
+            except subprocess.CalledProcessError:
+                pass
+        return
+
+    os.makedirs(models_root_abs, exist_ok=True)
+    pipeline_model.write().overwrite().save(_local_file_uri(local_dest))
 
 
 def summarize_params(model_stage):
@@ -230,7 +474,7 @@ def summarize_params(model_stage):
         name = str(k.name)
         if hasattr(v, "item"):
             v = v.item()
-        elif isinstance(v, (list, tuple)) and hasattr(v[0], "item"):
+        elif isinstance(v, (list, tuple)) and v and hasattr(v[0], "item"):
             v = type(v)(x.item() if hasattr(x, "item") else x for x in v)
         m[name] = v
     return m
@@ -265,7 +509,18 @@ def evaluate_test(best_pipeline, test_df):
     )
 
 
-def make_preprocessing_stages(features):
+def scaler_use_mean(cli_flag: bool) -> bool:
+    if cli_flag:
+        return True
+    return os.environ.get("STAGE3_SCALER_WITH_MEAN", "").lower() in ("1", "true", "yes")
+
+
+def rf_lite_requested() -> bool:
+    """Reduced RF grid for full-table Yarn CV; env STAGE3_RF_LITE (fewer executor OOM kills)."""
+    return os.environ.get("STAGE3_RF_LITE", "").lower() in ("1", "true", "yes")
+
+
+def make_preprocessing_stages(features, with_mean_center: bool):
     imp_in = features[:]
     imp_out = [c + "__imp" for c in imp_in]
     imputer = Imputer(inputCols=imp_in, outputCols=imp_out, strategy="median")
@@ -274,10 +529,11 @@ def make_preprocessing_stages(features):
         outputCol="raw_features",
         handleInvalid="skip",
     )
+    # withMean=True densifies vectors; ~21M×23 doubles ≈ gigabytes heap on driver.
     scaler = StandardScaler(
         inputCol="raw_features",
         outputCol="features",
-        withMean=True,
+        withMean=with_mean_center,
         withStd=True,
     )
     return imputer, assembler, scaler
@@ -285,25 +541,22 @@ def make_preprocessing_stages(features):
 
 def main():
     args = parse_args()
-    data_dir = os.path.abspath(args.data_dir)
     models_root = os.path.abspath(args.models_dir)
     output_root = os.path.abspath(args.output_dir)
     os.makedirs(models_root, exist_ok=True)
     os.makedirs(output_root, exist_ok=True)
 
-    spark_builder = SparkSession.builder.appName("yellow_taxi_stage3_tip_reg").config(
-        "spark.sql.shuffle.partitions",
-        os.environ.get("SPARK_SQL_SHUFFLE_PARTITIONS", "200"),
-    ).config(
-        "spark.sql.adaptive.enabled",
-        os.environ.get("SPARK_SQL_ADAPTIVE_ENABLED", "true"),
-    )
-    if args.master:
-        spark_builder = spark_builder.master(args.master)
-    spark = spark_builder.getOrCreate()
+    spark = build_spark_session(args)
     spark.sparkContext.setLogLevel("WARN")
 
-    raw = load_raw(spark, data_dir)
+    if args.hive_table:
+        raw = load_hive_table(spark, args.hive_database, args.hive_table)
+        data_note = hive_table_qualifier(args.hive_database, args.hive_table)
+    else:
+        data_dir_resolved = resolve_filesystem_data_dir(args.data_dir)
+        raw = load_raw(spark, data_dir_resolved)
+        data_note = data_dir_resolved
+
     if args.sample_fraction is not None:
         s = args.sample_fraction
         if not 0 < s <= 1:
@@ -314,8 +567,6 @@ def main():
     feats = [c for c in ml_ready.columns if c != "label"]
     ml_ready = ml_ready.select(*feats, "label")
 
-    # Avoid MEMORY_ONLY .cache() stacking on the driver (OOM / process "Killed"):
-    # spill to disk when heap is tight; drop the pre-split frame once train/test exist.
     md = StorageLevel.MEMORY_AND_DISK
     ml_ready = ml_ready.persist(md)
 
@@ -330,7 +581,12 @@ def main():
         raise RuntimeError("Empty dataframe after preprocessing (check filters/input).")
 
     ml_ready.unpersist(blocking=True)
-    print(f"[stage3] rows={n:,} train={train_n:,} test={test_n:,} features={len(feats)}")
+    scale_center = scaler_use_mean(args.scaler_with_mean)
+    print(
+        f"[stage3] source={data_note} rows={n:,} train={train_n:,} "
+        f"test={test_n:,} features={len(feats)} scaler_with_mean={scale_center} "
+        f"cv_parallelism={args.parallelism}",
+    )
 
     cv_evaluator = RegressionEvaluator(
         labelCol="label",
@@ -338,7 +594,6 @@ def main():
         metricName="rmse",
     )
 
-    # Model 1 — LinearRegression (optimize regParam & elasticNetParam; tuning maxIter discouraged)
     lr = LinearRegression(
         labelCol="label",
         featuresCol="features",
@@ -352,7 +607,7 @@ def main():
         .addGrid(lr.elasticNetParam, [0.0, 0.5, 1.0])
         .build()
     )
-    imputer_lr, assembler_lr, scaler_lr = make_preprocessing_stages(feats)
+    imputer_lr, assembler_lr, scaler_lr = make_preprocessing_stages(feats, scale_center)
     lr_pipe = Pipeline(stages=[imputer_lr, assembler_lr, scaler_lr, lr])
 
     lr_cv_model = fit_cv_and_pick_best(
@@ -368,24 +623,43 @@ def main():
     preds1, lr_rmse, lr_r2 = evaluate_test(lr_best, test_df)
 
     write_single_partition_csv(preds1, os.path.join(output_root, "model1_predictions.csv"))
-    lr_best.write().overwrite().save(os.path.join(models_root, "model1_lr"))
+    save_ml_pipeline_local(lr_best, models_root, "model1_lr")
 
-    rf = RandomForestRegressor(
-        labelCol="label",
-        featuresCol="features",
-        seed=args.random_seed,
-        numTrees=100,
-        maxDepth=10,
-        minInstancesPerNode=1,
-    )
-    rf_grid = (
-        ParamGridBuilder()
-        .addGrid(rf.numTrees, [80, 120])
-        .addGrid(rf.maxDepth, [8, 12])
-        .addGrid(rf.minInstancesPerNode, [1, 10])
-        .build()
-    )
-    imputer_rf, assembler_rf, scaler_rf = make_preprocessing_stages(feats)
+    rf_lite = rf_lite_requested()
+    if rf_lite:
+        rf = RandomForestRegressor(
+            labelCol="label",
+            featuresCol="features",
+            seed=args.random_seed,
+            numTrees=48,
+            maxDepth=8,
+            minInstancesPerNode=5,
+        )
+        rf_grid = (
+            ParamGridBuilder()
+            .addGrid(rf.numTrees, [40, 56])
+            .addGrid(rf.maxDepth, [6, 10])
+            .addGrid(rf.minInstancesPerNode, [5, 15])
+            .build()
+        )
+        print("[stage3] STAGE3_RF_LITE=1: using reduced RF grid/trees")
+    else:
+        rf = RandomForestRegressor(
+            labelCol="label",
+            featuresCol="features",
+            seed=args.random_seed,
+            numTrees=100,
+            maxDepth=10,
+            minInstancesPerNode=1,
+        )
+        rf_grid = (
+            ParamGridBuilder()
+            .addGrid(rf.numTrees, [80, 120])
+            .addGrid(rf.maxDepth, [8, 12])
+            .addGrid(rf.minInstancesPerNode, [1, 10])
+            .build()
+        )
+    imputer_rf, assembler_rf, scaler_rf = make_preprocessing_stages(feats, scale_center)
     rf_pipe = Pipeline(stages=[imputer_rf, assembler_rf, scaler_rf, rf])
 
     rf_cv_model = fit_cv_and_pick_best(
@@ -401,7 +675,7 @@ def main():
     preds2, rf_rmse, rf_r2 = evaluate_test(rf_best, test_df)
 
     write_single_partition_csv(preds2, os.path.join(output_root, "model2_predictions.csv"))
-    rf_best.write().overwrite().save(os.path.join(models_root, "model2_rf"))
+    save_ml_pipeline_local(rf_best, models_root, "model2_rf")
 
     rows = (
         ("LinearRegression", lr_rmse, lr_r2),
@@ -415,8 +689,10 @@ def main():
 
     summary = {
         "task": "regression_tip_amount_credit_card_trips_only",
+        "data_source": str(data_note),
         "train_rows": int(train_n),
         "test_rows": int(test_n),
+        "scaler_with_mean": bool(scale_center),
         "cross_validation_rmse_focus": True,
         "model1": {
             "name": "LinearRegression",
