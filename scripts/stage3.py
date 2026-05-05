@@ -14,7 +14,7 @@ forces dense vectors and often OOMs the Spark driver during CV unless RAM is hug
 Use STAGE3_DRIVER_MEM / executor memory and STAGE3_CV_PARALLELISM if the gateway is tight.
 On congested Yarn hosts, Executor Process Lost + ``Killed`` almost always indicates container RAM:
 pass STAGE3_YARN_STABLE=1 / STAGE3_EXEC_MEMORY_OVERHEAD (see scripts/stage3.sh) and optional
-``STAGE3_RF_LITE=1`` for a smaller RandomForest CV grid without changing LR.
+``STAGE3_GBT_LITE=1`` for a smaller Gradient-Boosted Tree CV grid without changing LR.
 
 On YARN, default fs is usually HDFS — writes to UNIX paths such as /home/user/... are resolved on
 HDFS and fail unless you explicitly use file:// staging. CSV and model dirs are staged under
@@ -25,7 +25,8 @@ Set ``STAGE3_LOCAL_WRITES_ONLY=1`` when the ``hdfs`` CLI is unavailable.
 Outputs (aligned with BS/MS Stage III checklist):
   output/model1_predictions.csv — label,prediction
   output/model2_predictions.csv — label,prediction
-  output/evaluation.csv — model, RMSE, R2 on test data
+  output/evaluation.csv — model-level accuracy and residual metrics on test data
+  output/model_feature_signals.csv — top linear coefficients / tree feature importances
 """
 # Whole-stage script: keep sequential ML steps explicit for reproducibility reports.
 # pylint: disable=too-many-locals,too-many-statements,too-many-arguments,too-many-positional-arguments,missing-function-docstring
@@ -46,8 +47,8 @@ from pyspark.sql.types import DoubleType
 
 from pyspark.ml import Pipeline
 from pyspark.ml.evaluation import RegressionEvaluator
-from pyspark.ml.feature import Imputer, StandardScaler, VectorAssembler
-from pyspark.ml.regression import LinearRegression, RandomForestRegressor
+from pyspark.ml.feature import Imputer, OneHotEncoder, StandardScaler, StringIndexer, VectorAssembler
+from pyspark.ml.regression import GBTRegressor, LinearRegression
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 
 # Stage II hive column aliases (snake/lowercase → TLC-style names engineer_features expects)
@@ -57,6 +58,8 @@ STAGE2_TO_TLC_COLUMNS = (
     ("pulocationid", "PULocationID"),
     ("dolocationid", "DOLocationID"),
 )
+
+CATEGORICAL_FEATURES = ("VendorID", "RatecodeID", "PULocationID", "DOLocationID")
 
 
 def parse_args():
@@ -337,8 +340,56 @@ def engineer_features(raw_df):
             "avg_speed_mph",
             F.col("trip_distance") / (F.col("trip_duration_min") / F.lit(60.0)),
         )
+        .withColumn(
+            "rush_hour",
+            F.when(F.col("_hh").between(F.lit(7.0), F.lit(9.0)), F.lit(1.0))
+            .when(F.col("_hh").between(F.lit(16.0), F.lit(19.0)), F.lit(1.0))
+            .otherwise(F.lit(0.0)),
+        )
+        .withColumn(
+            "night_trip",
+            F.when((F.col("_hh") >= F.lit(22.0)) | (F.col("_hh") <= F.lit(5.0)), F.lit(1.0))
+            .otherwise(F.lit(0.0)),
+        )
         .drop("_m", "_hh", "_dow0")
     )
+
+    if "RatecodeID" in df.columns:
+        df = df.withColumn(
+            "airport_rate",
+            F.when(F.col("RatecodeID").isin(2, 3), F.lit(1.0)).otherwise(F.lit(0.0)),
+        )
+    if {"fare_amount", "trip_distance"} <= set(df.columns):
+        df = df.withColumn(
+            "fare_per_mile",
+            F.col("fare_amount") / F.greatest(F.col("trip_distance"), F.lit(0.1)),
+        )
+        df = df.withColumn(
+            "distance_fare_interaction",
+            F.col("trip_distance") * F.col("fare_amount"),
+        )
+    if {"fare_amount", "trip_duration_min"} <= set(df.columns):
+        df = df.withColumn(
+            "fare_per_minute",
+            F.col("fare_amount") / F.greatest(F.col("trip_duration_min"), F.lit(1.0)),
+        )
+
+    pre_tip_cols = [
+        c
+        for c in (
+            "fare_amount",
+            "extra",
+            "mta_tax",
+            "tolls_amount",
+            "congestion_surcharge",
+            "airport_fee",
+            "improvement_surcharge",
+        )
+        if c in df.columns
+    ]
+    if pre_tip_cols:
+        total_expr = sum((F.coalesce(F.col(c), F.lit(0.0)) for c in pre_tip_cols), F.lit(0.0))
+        df = df.withColumn("pre_tip_amount", total_expr)
 
     cand = [
         "VendorID",
@@ -363,7 +414,14 @@ def engineer_features(raw_df):
         "pickup_dow_sin",
         "pickup_dow_cos",
         "is_weekend",
+        "rush_hour",
+        "night_trip",
         "avg_speed_mph",
+        "airport_rate",
+        "fare_per_mile",
+        "fare_per_minute",
+        "distance_fare_interaction",
+        "pre_tip_amount",
     ]
     use = [c for c in cand if c in df.columns]
     return df.select(*(use + ["tip_amount"]))
@@ -492,21 +550,51 @@ def fit_cv_and_pick_best(train, pipeline, grid, evaluator, folds, parallelism, s
     return cv.fit(train)
 
 
+def compute_regression_metrics(pred):
+    scored = pred.withColumn("error", F.col("prediction") - F.col("label")).withColumn(
+        "abs_error",
+        F.abs(F.col("prediction") - F.col("label")),
+    )
+    evaluators = {
+        "rmse": RegressionEvaluator(labelCol="label", predictionCol="prediction", metricName="rmse"),
+        "mae": RegressionEvaluator(labelCol="label", predictionCol="prediction", metricName="mae"),
+        "r2": RegressionEvaluator(labelCol="label", predictionCol="prediction", metricName="r2"),
+        "explained_variance": RegressionEvaluator(
+            labelCol="label",
+            predictionCol="prediction",
+            metricName="var",
+        ),
+    }
+    metrics = {name: float(ev.evaluate(pred)) for name, ev in evaluators.items()}
+    residuals = scored.agg(
+        F.avg("error").alias("mean_error"),
+        F.avg(F.when(F.col("abs_error") <= F.lit(1.0), F.lit(1.0)).otherwise(F.lit(0.0))).alias(
+            "within_1_dollar",
+        ),
+        F.avg(F.when(F.col("abs_error") <= F.lit(2.0), F.lit(1.0)).otherwise(F.lit(0.0))).alias(
+            "within_2_dollars",
+        ),
+    ).first()
+    q50, q90, q95 = scored.approxQuantile("abs_error", [0.5, 0.9, 0.95], 0.01)
+    metrics.update(
+        {
+            "mean_error": float(residuals["mean_error"]),
+            "median_abs_error": float(q50),
+            "p90_abs_error": float(q90),
+            "p95_abs_error": float(q95),
+            "within_1_dollar": float(residuals["within_1_dollar"]),
+            "within_2_dollars": float(residuals["within_2_dollars"]),
+        },
+    )
+    return metrics
+
+
 def evaluate_test(best_pipeline, test_df):
-    pred = best_pipeline.transform(test_df)
-    rmse_ev = RegressionEvaluator(
-        labelCol="label",
-        predictionCol="prediction",
-        metricName="rmse",
+    pred = best_pipeline.transform(test_df).select(
+        "label",
+        F.greatest(F.col("prediction"), F.lit(0.0)).alias("prediction"),
     )
-    r2_ev = RegressionEvaluator(
-        labelCol="label",
-        predictionCol="prediction",
-        metricName="r2",
-    )
-    return pred.select("label", "prediction"), float(rmse_ev.evaluate(pred)), float(
-        r2_ev.evaluate(pred),
-    )
+    return pred, compute_regression_metrics(pred)
 
 
 def scaler_use_mean(cli_flag: bool) -> bool:
@@ -515,28 +603,100 @@ def scaler_use_mean(cli_flag: bool) -> bool:
     return os.environ.get("STAGE3_SCALER_WITH_MEAN", "").lower() in ("1", "true", "yes")
 
 
-def rf_lite_requested() -> bool:
-    """Reduced RF grid for full-table Yarn CV; env STAGE3_RF_LITE (fewer executor OOM kills)."""
-    return os.environ.get("STAGE3_RF_LITE", "").lower() in ("1", "true", "yes")
+def strong_model_lite_requested() -> bool:
+    return os.environ.get("STAGE3_GBT_LITE", "").lower() in ("1", "true", "yes") or os.environ.get(
+        "STAGE3_RF_LITE",
+        "",
+    ).lower() in ("1", "true", "yes")
 
 
-def make_preprocessing_stages(features, with_mean_center: bool):
-    imp_in = features[:]
-    imp_out = [c + "__imp" for c in imp_in]
-    imputer = Imputer(inputCols=imp_in, outputCols=imp_out, strategy="median")
+def make_preprocessing_stages(features, categorical_features, with_mean_center: bool, scale_features: bool):
+    categorical = [c for c in categorical_features if c in features]
+    numeric = [c for c in features if c not in categorical]
+    stages = []
+    assembler_inputs = []
+    if numeric:
+        imp_out = [c + "__imp" for c in numeric]
+        stages.append(Imputer(inputCols=numeric, outputCols=imp_out, strategy="median"))
+        assembler_inputs.extend(imp_out)
+    if categorical:
+        idx_out = [c + "__idx" for c in categorical]
+        oh_out = [c + "__oh" for c in categorical]
+        stages.append(StringIndexer(inputCols=categorical, outputCols=idx_out, handleInvalid="keep"))
+        stages.append(OneHotEncoder(inputCols=idx_out, outputCols=oh_out, dropLast=False))
+        assembler_inputs.extend(oh_out)
     assembler = VectorAssembler(
-        inputCols=imp_out,
-        outputCol="raw_features",
+        inputCols=assembler_inputs,
+        outputCol="raw_features" if scale_features else "features",
         handleInvalid="skip",
     )
-    # withMean=True densifies vectors; ~21M×23 doubles ≈ gigabytes heap on driver.
-    scaler = StandardScaler(
-        inputCol="raw_features",
-        outputCol="features",
-        withMean=with_mean_center,
-        withStd=True,
-    )
-    return imputer, assembler, scaler
+    stages.append(assembler)
+    if scale_features:
+        stages.append(
+            StandardScaler(
+                inputCol="raw_features",
+                outputCol="features",
+                withMean=with_mean_center,
+                withStd=True,
+            ),
+        )
+    return stages
+
+
+def feature_names_from_pipeline(pipeline_model, ref_df):
+    schema = pipeline_model.transform(ref_df.limit(1)).schema
+    metadata = schema["features"].metadata.get("ml_attr", {})
+    attrs = metadata.get("attrs", {})
+    indexed = {}
+    for attr_group in attrs.values():
+        for attr in attr_group:
+            if "idx" in attr and "name" in attr:
+                indexed[int(attr["idx"])] = attr["name"]
+    size = metadata.get("num_attrs", metadata.get("numAttrs", len(indexed)))
+    return [indexed.get(i, f"feature_{i}") for i in range(int(size))]
+
+
+def top_model_signal_rows(model_name, pipeline_model, ref_df, limit=30):
+    model_stage = pipeline_model.stages[-1]
+    names = feature_names_from_pipeline(pipeline_model, ref_df)
+    rows = []
+    if hasattr(model_stage, "coefficients"):
+        values = model_stage.coefficients.toArray().tolist()
+        ranked = sorted(
+            enumerate(values),
+            key=lambda item: abs(float(item[1])),
+            reverse=True,
+        )[:limit]
+        for rank, (idx, value) in enumerate(ranked, start=1):
+            rows.append(
+                (
+                    model_name,
+                    rank,
+                    names[idx] if idx < len(names) else f"feature_{idx}",
+                    "coefficient",
+                    float(value),
+                    float(abs(value)),
+                ),
+            )
+    elif hasattr(model_stage, "featureImportances"):
+        values = model_stage.featureImportances.toArray().tolist()
+        ranked = sorted(
+            enumerate(values),
+            key=lambda item: float(item[1]),
+            reverse=True,
+        )[:limit]
+        for rank, (idx, value) in enumerate(ranked, start=1):
+            rows.append(
+                (
+                    model_name,
+                    rank,
+                    names[idx] if idx < len(names) else f"feature_{idx}",
+                    "importance",
+                    float(value),
+                    float(value),
+                ),
+            )
+    return rows
 
 
 def main():
@@ -607,8 +767,9 @@ def main():
         .addGrid(lr.elasticNetParam, [0.0, 0.5, 1.0])
         .build()
     )
-    imputer_lr, assembler_lr, scaler_lr = make_preprocessing_stages(feats, scale_center)
-    lr_pipe = Pipeline(stages=[imputer_lr, assembler_lr, scaler_lr, lr])
+    lr_pipe = Pipeline(
+        stages=make_preprocessing_stages(feats, CATEGORICAL_FEATURES, scale_center, True) + [lr],
+    )
 
     lr_cv_model = fit_cv_and_pick_best(
         train_df,
@@ -620,72 +781,129 @@ def main():
         seed=args.random_seed,
     )
     lr_best = lr_cv_model.bestModel
-    preds1, lr_rmse, lr_r2 = evaluate_test(lr_best, test_df)
+    preds1, lr_metrics = evaluate_test(lr_best, test_df)
 
     write_single_partition_csv(preds1, os.path.join(output_root, "model1_predictions.csv"))
     save_ml_pipeline_local(lr_best, models_root, "model1_lr")
 
-    rf_lite = rf_lite_requested()
-    if rf_lite:
-        rf = RandomForestRegressor(
+    gbt_lite = strong_model_lite_requested()
+    if gbt_lite:
+        gbt = GBTRegressor(
             labelCol="label",
             featuresCol="features",
             seed=args.random_seed,
-            numTrees=48,
-            maxDepth=8,
-            minInstancesPerNode=5,
+            maxIter=48,
+            maxDepth=5,
+            stepSize=0.05,
+            minInstancesPerNode=20,
         )
-        rf_grid = (
+        gbt_grid = (
             ParamGridBuilder()
-            .addGrid(rf.numTrees, [40, 56])
-            .addGrid(rf.maxDepth, [6, 10])
-            .addGrid(rf.minInstancesPerNode, [5, 15])
+            .addGrid(gbt.maxIter, [40, 60])
+            .addGrid(gbt.maxDepth, [4, 6])
+            .addGrid(gbt.minInstancesPerNode, [20])
             .build()
         )
-        print("[stage3] STAGE3_RF_LITE=1: using reduced RF grid/trees")
+        print("[stage3] STAGE3_GBT_LITE=1: using reduced GBT grid/trees")
     else:
-        rf = RandomForestRegressor(
+        gbt = GBTRegressor(
             labelCol="label",
             featuresCol="features",
             seed=args.random_seed,
-            numTrees=100,
-            maxDepth=10,
-            minInstancesPerNode=1,
+            maxIter=100,
+            maxDepth=7,
+            stepSize=0.05,
+            minInstancesPerNode=10,
         )
-        rf_grid = (
+        gbt_grid = (
             ParamGridBuilder()
-            .addGrid(rf.numTrees, [80, 120])
-            .addGrid(rf.maxDepth, [8, 12])
-            .addGrid(rf.minInstancesPerNode, [1, 10])
+            .addGrid(gbt.maxIter, [80, 120])
+            .addGrid(gbt.maxDepth, [5, 7])
+            .addGrid(gbt.stepSize, [0.03, 0.05])
+            .addGrid(gbt.minInstancesPerNode, [10])
             .build()
         )
-    imputer_rf, assembler_rf, scaler_rf = make_preprocessing_stages(feats, scale_center)
-    rf_pipe = Pipeline(stages=[imputer_rf, assembler_rf, scaler_rf, rf])
+    gbt_pipe = Pipeline(
+        stages=make_preprocessing_stages(feats, CATEGORICAL_FEATURES, scale_center, False) + [gbt],
+    )
 
-    rf_cv_model = fit_cv_and_pick_best(
+    gbt_cv_model = fit_cv_and_pick_best(
         train_df,
-        rf_pipe,
-        rf_grid,
+        gbt_pipe,
+        gbt_grid,
         cv_evaluator,
         folds=args.cv_folds,
         parallelism=args.parallelism,
         seed=args.random_seed,
     )
-    rf_best = rf_cv_model.bestModel
-    preds2, rf_rmse, rf_r2 = evaluate_test(rf_best, test_df)
+    gbt_best = gbt_cv_model.bestModel
+    preds2, gbt_metrics = evaluate_test(gbt_best, test_df)
 
     write_single_partition_csv(preds2, os.path.join(output_root, "model2_predictions.csv"))
-    save_ml_pipeline_local(rf_best, models_root, "model2_rf")
+    save_ml_pipeline_local(gbt_best, models_root, "model2_gbt")
 
     rows = (
-        ("LinearRegression", lr_rmse, lr_r2),
-        ("RandomForestRegressor", rf_rmse, rf_r2),
+        (
+            "LinearRegression",
+            lr_metrics["rmse"],
+            lr_metrics["mae"],
+            lr_metrics["r2"],
+            lr_metrics["explained_variance"],
+            lr_metrics["mean_error"],
+            lr_metrics["median_abs_error"],
+            lr_metrics["p90_abs_error"],
+            lr_metrics["p95_abs_error"],
+            lr_metrics["within_1_dollar"],
+            lr_metrics["within_2_dollars"],
+        ),
+        (
+            "GBTRegressor",
+            gbt_metrics["rmse"],
+            gbt_metrics["mae"],
+            gbt_metrics["r2"],
+            gbt_metrics["explained_variance"],
+            gbt_metrics["mean_error"],
+            gbt_metrics["median_abs_error"],
+            gbt_metrics["p90_abs_error"],
+            gbt_metrics["p95_abs_error"],
+            gbt_metrics["within_1_dollar"],
+            gbt_metrics["within_2_dollars"],
+        ),
     )
-    comp = spark.createDataFrame(rows, ["model", "RMSE", "R2"])
+    comp = spark.createDataFrame(
+        rows,
+        [
+            "model",
+            "RMSE",
+            "MAE",
+            "R2",
+            "ExplainedVariance",
+            "MeanError",
+            "MedianAbsError",
+            "P90AbsError",
+            "P95AbsError",
+            "Within1Dollar",
+            "Within2Dollars",
+        ],
+    )
     write_single_partition_csv(comp, os.path.join(output_root, "evaluation.csv"))
 
     lr_stage = lr_best.stages[-1]
-    rf_stage = rf_best.stages[-1]
+    gbt_stage = gbt_best.stages[-1]
+    signal_rows = top_model_signal_rows("LinearRegression", lr_best, test_df) + top_model_signal_rows(
+        "GBTRegressor",
+        gbt_best,
+        test_df,
+    )
+    if signal_rows:
+        signal_df = spark.createDataFrame(
+            signal_rows,
+            ["model", "rank", "feature", "signal_type", "signed_value", "absolute_value"],
+        )
+        write_single_partition_csv(
+            signal_df,
+            os.path.join(output_root, "model_feature_signals.csv"),
+        )
 
     summary = {
         "task": "regression_tip_amount_credit_card_trips_only",
@@ -694,22 +912,22 @@ def main():
         "test_rows": int(test_n),
         "scaler_with_mean": bool(scale_center),
         "cross_validation_rmse_focus": True,
+        "prediction_postprocess": "negative predictions clipped to 0.0 for metrics and CSV exports",
         "model1": {
             "name": "LinearRegression",
-            "test_rmse": lr_rmse,
-            "test_r2": lr_r2,
+            "test_metrics": lr_metrics,
             "best_params_from_cv": summarize_params(lr_stage),
             "prediction_csv": os.path.join(output_root, "model1_predictions.csv"),
             "persisted_pipeline": os.path.join(models_root, "model1_lr"),
         },
         "model2": {
-            "name": "RandomForestRegressor",
-            "test_rmse": rf_rmse,
-            "test_r2": rf_r2,
-            "best_params_from_cv": summarize_params(rf_stage),
+            "name": "GBTRegressor",
+            "test_metrics": gbt_metrics,
+            "best_params_from_cv": summarize_params(gbt_stage),
             "prediction_csv": os.path.join(output_root, "model2_predictions.csv"),
-            "persisted_pipeline": os.path.join(models_root, "model2_rf"),
+            "persisted_pipeline": os.path.join(models_root, "model2_gbt"),
         },
+        "feature_signal_csv": os.path.join(output_root, "model_feature_signals.csv"),
     }
 
     summ_path = os.path.join(output_root, "stage3_training_summary.json")

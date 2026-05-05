@@ -7,12 +7,13 @@ This document summarizes what was implemented for **Stage III (Predictive Data A
 
 | Path | Purpose |
 | --- | --- |
-| `scripts/stage3.py` | End-to-end regression: preprocessing, two estimators, CV, evaluation, CSV exports, model persistence. |
+| `scripts/stage3.py` | End-to-end regression: feature engineering, categorical preprocessing, LR + GBT CV, evaluation, CSV exports, model persistence. |
 | `scripts/stage3.sh` | `spark-submit` wrapper switching between **local** data & **Yarn+HDFS** layouts. |
 | `output/model1_predictions.csv`, `output/model2_predictions.csv` | Only `label,prediction`, effectively single partition (`coalesce` + merge). |
-| `output/evaluation.csv` | Holds `model`, `RMSE`, `R2` for comparison. |
+| `output/evaluation.csv` | Holds `RMSE`, `MAE`, `R2`, explained variance, residual quantiles, and within-$1/$2 accuracy. |
+| `output/model_feature_signals.csv` | Top LR coefficients and GBT feature importances for interpretation. |
 | `output/stage3_training_summary.json` | Metrics + serialized best-parameter map (`default=str` for safety). |
-| `models/model1_lr`, `models/model2_rf` | Saved Spark `PipelineModel` folders. |
+| `models/model1_lr`, `models/model2_gbt` | Saved Spark `PipelineModel` folders. |
 
 ## How to run on a Cluster
 
