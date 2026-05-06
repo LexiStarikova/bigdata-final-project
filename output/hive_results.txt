@@ -1,0 +1,161 @@
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- 1. Clean up and create new database
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP DATABASE IF EXISTS team35_projectdb CASCADE;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE DATABASE team35_projectdb LOCATION 'project/hive/warehouse';
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> USE team35_projectdb;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- 2. Create external table pointing to AVRO files imported by Sqoop
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE yellow_taxi_trips
+. . . . . . . . . . . . . . . . . . . . . . .> STORED AS AVRO
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/warehouse/yellow_taxi_trips'
+. . . . . . . . . . . . . . . . . . . . . . .> TBLPROPERTIES ('avro.schema.url'='project/warehouse/avsc/yellow_taxi_trips.avsc');
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Сheck if data loaded correctly
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SHOW TABLES;
++--------------------+
+|      tab_name      |
++--------------------+
+| yellow_taxi_trips  |
++--------------------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DESCRIBE yellow_taxi_trips;
++------------------------+------------+----------+
+|        col_name        | data_type  | comment  |
++------------------------+------------+----------+
+| trip_id                | bigint     |          |
+| vendorid               | int        |          |
+| tpep_pickup_datetime   | bigint     |          |
+| tpep_dropoff_datetime  | bigint     |          |
+| passenger_count        | double     |          |
+| trip_distance          | double     |          |
+| ratecodeid             | double     |          |
+| store_and_fwd_flag     | string     |          |
+| pulocationid           | int        |          |
+| dolocationid           | int        |          |
+| payment_type           | double     |          |
+| fare_amount            | double     |          |
+| extra                  | double     |          |
+| mta_tax                | double     |          |
+| tip_amount             | double     |          |
+| tolls_amount           | double     |          |
+| improvement_surcharge  | double     |          |
+| total_amount           | double     |          |
+| congestion_surcharge   | double     |          |
+| airport_fee            | double     |          |
++------------------------+------------+----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT * FROM yellow_taxi_trips LIMIT 5;
++----------------------------+-----------------------------+-----------------------------------------+------------------------------------------+------------------------------------+----------------------------------+-------------------------------+---------------------------------------+---------------------------------+---------------------------------+---------------------------------+--------------------------------+--------------------------+----------------------------+-------------------------------+---------------------------------+------------------------------------------+---------------------------------+-----------------------------------------+--------------------------------+
+| yellow_taxi_trips.trip_id  | yellow_taxi_trips.vendorid  | yellow_taxi_trips.tpep_pickup_datetime  | yellow_taxi_trips.tpep_dropoff_datetime  | yellow_taxi_trips.passenger_count  | yellow_taxi_trips.trip_distance  | yellow_taxi_trips.ratecodeid  | yellow_taxi_trips.store_and_fwd_flag  | yellow_taxi_trips.pulocationid  | yellow_taxi_trips.dolocationid  | yellow_taxi_trips.payment_type  | yellow_taxi_trips.fare_amount  | yellow_taxi_trips.extra  | yellow_taxi_trips.mta_tax  | yellow_taxi_trips.tip_amount  | yellow_taxi_trips.tolls_amount  | yellow_taxi_trips.improvement_surcharge  | yellow_taxi_trips.total_amount  | yellow_taxi_trips.congestion_surcharge  | yellow_taxi_trips.airport_fee  |
++----------------------------+-----------------------------+-----------------------------------------+------------------------------------------+------------------------------------+----------------------------------+-------------------------------+---------------------------------------+---------------------------------+---------------------------------+---------------------------------+--------------------------------+--------------------------+----------------------------+-------------------------------+---------------------------------+------------------------------------------+---------------------------------+-----------------------------------------+--------------------------------+
+| 1                          | 1                           | 1735679918000                           | 1735680419000                            | 1.0                                | 1.6                              | 1.0                           | N                                     | 229                             | 237                             | 1.0                             | 10.0                           | 3.5                      | 0.5                        | 3.0                           | 0.0                             | 1.0                                      | 18.0                            | 2.5                                     | 0.0                            |
+| 2                          | 1                           | 1735680760000                           | 1735680913000                            | 1.0                                | 0.5                              | 1.0                           | N                                     | 236                             | 237                             | 1.0                             | 5.1                            | 3.5                      | 0.5                        | 2.02                          | 0.0                             | 1.0                                      | 12.12                           | 2.5                                     | 0.0                            |
+| 3                          | 1                           | 1735681444000                           | 1735681561000                            | 1.0                                | 0.6                              | 1.0                           | N                                     | 141                             | 141                             | 1.0                             | 5.1                            | 3.5                      | 0.5                        | 2.0                           | 0.0                             | 1.0                                      | 12.1                            | 2.5                                     | 0.0                            |
+| 4                          | 2                           | 1735679667000                           | 1735680001000                            | 3.0                                | 0.52                             | 1.0                           | N                                     | 244                             | 244                             | 2.0                             | 7.2                            | 1.0                      | 0.5                        | 0.0                           | 0.0                             | 1.0                                      | 9.7                             | 0.0                                     | 0.0                            |
+| 5                          | 2                           | 1735680094000                           | 1735680306000                            | 3.0                                | 0.66                             | 1.0                           | N                                     | 244                             | 116                             | 2.0                             | 5.8                            | 1.0                      | 0.5                        | 0.0                           | 0.0                             | 1.0                                      | 8.3                             | 0.0                                     | 0.0                            |
++----------------------------+-----------------------------+-----------------------------------------+------------------------------------------+------------------------------------+----------------------------------+-------------------------------+---------------------------------------+---------------------------------+---------------------------------+---------------------------------+--------------------------------+--------------------------+----------------------------+-------------------------------+---------------------------------+------------------------------------------+---------------------------------+-----------------------------------------+--------------------------------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- 3. Enable dynamic partitioning - allows Hive to create partitions automatically
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SET hive.exec.dynamic.partition=true;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SET hive.exec.dynamic.partition.mode=nonstrict;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- 4. Drop old partitioned table if it exists
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE IF EXISTS yellow_taxi_trips_part_buck;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- 5. Create partitioned + bucketed external table for better performance
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Datetime columns MUST stay BIGINT (milliseconds) to match Avro schema (type "long").
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Declaring TIMESTAMP here while TBLPROPERTIES still point at yellow_taxi_trips.avsc
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- makes the Avro SerDe read/write NULL for those fields — all time-based EDA then looks empty.
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> CREATE EXTERNAL TABLE yellow_taxi_trips_part_buck (
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_id BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     vendorid INT,
+. . . . . . . . . . . . . . . . . . . . . . .>     tpep_pickup_datetime BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     tpep_dropoff_datetime BIGINT,
+. . . . . . . . . . . . . . . . . . . . . . .>     passenger_count DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_distance DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     ratecodeid DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     store_and_fwd_flag STRING,
+. . . . . . . . . . . . . . . . . . . . . . .>     pulocationid INT,
+. . . . . . . . . . . . . . . . . . . . . . .>     dolocationid INT,
+. . . . . . . . . . . . . . . . . . . . . . .>     payment_type DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     fare_amount DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     extra DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     mta_tax DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     tip_amount DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     tolls_amount DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     improvement_surcharge DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_amount DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     congestion_surcharge DOUBLE,
+. . . . . . . . . . . . . . . . . . . . . . .>     airport_fee DOUBLE
+. . . . . . . . . . . . . . . . . . . . . . .> )
+. . . . . . . . . . . . . . . . . . . . . . .> PARTITIONED BY (year INT)
+. . . . . . . . . . . . . . . . . . . . . . .> CLUSTERED BY (vendorid) INTO 4 BUCKETS
+. . . . . . . . . . . . . . . . . . . . . . .> STORED AS AVRO
+. . . . . . . . . . . . . . . . . . . . . . .> LOCATION 'project/hive/warehouse/yellow_taxi_trips_part_buck'
+. . . . . . . . . . . . . . . . . . . . . . .> TBLPROPERTIES ('avro.schema.url'='project/warehouse/avsc/yellow_taxi_trips.avsc');
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- 6. Load data with automatic partition creation
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> INSERT INTO yellow_taxi_trips_part_buck PARTITION (year)
+. . . . . . . . . . . . . . . . . . . . . . .> SELECT
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_id,
+. . . . . . . . . . . . . . . . . . . . . . .>     vendorid,
+. . . . . . . . . . . . . . . . . . . . . . .>     tpep_pickup_datetime,
+. . . . . . . . . . . . . . . . . . . . . . .>     tpep_dropoff_datetime,
+. . . . . . . . . . . . . . . . . . . . . . .>     passenger_count,
+. . . . . . . . . . . . . . . . . . . . . . .>     trip_distance,
+. . . . . . . . . . . . . . . . . . . . . . .>     ratecodeid,
+. . . . . . . . . . . . . . . . . . . . . . .>     store_and_fwd_flag,
+. . . . . . . . . . . . . . . . . . . . . . .>     pulocationid,
+. . . . . . . . . . . . . . . . . . . . . . .>     dolocationid,
+. . . . . . . . . . . . . . . . . . . . . . .>     payment_type,
+. . . . . . . . . . . . . . . . . . . . . . .>     fare_amount,
+. . . . . . . . . . . . . . . . . . . . . . .>     extra,
+. . . . . . . . . . . . . . . . . . . . . . .>     mta_tax,
+. . . . . . . . . . . . . . . . . . . . . . .>     tip_amount,
+. . . . . . . . . . . . . . . . . . . . . . .>     tolls_amount,
+. . . . . . . . . . . . . . . . . . . . . . .>     improvement_surcharge,
+. . . . . . . . . . . . . . . . . . . . . . .>     total_amount,
+. . . . . . . . . . . . . . . . . . . . . . .>     congestion_surcharge,
+. . . . . . . . . . . . . . . . . . . . . . .>     airport_fee,
+. . . . . . . . . . . . . . . . . . . . . . .>     YEAR(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT))) AS year
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- 7. Verify the results
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Check partitions were created correctly
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SHOW PARTITIONS yellow_taxi_trips_part_buck;
++------------+
+| partition  |
++------------+
+| year=2007  |
+| year=2008  |
+| year=2009  |
+| year=2024  |
+| year=2025  |
++------------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Count total records to ensure all data was transferred
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT COUNT(*) FROM yellow_taxi_trips_part_buck;
++-----------+
+|    _c0    |
++-----------+
+| 48722602  |
++-----------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- Sample data (human-readable pickup time from epoch ms)
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> SELECT trip_id,
+. . . . . . . . . . . . . . . . . . . . . . .>        vendorid,
+. . . . . . . . . . . . . . . . . . . . . . .>        FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT))   AS pickup_ts,
+. . . . . . . . . . . . . . . . . . . . . . .>        FROM_UNIXTIME(CAST(tpep_dropoff_datetime / 1000 AS BIGINT))   AS dropoff_ts,
+. . . . . . . . . . . . . . . . . . . . . . .>        year
+. . . . . . . . . . . . . . . . . . . . . . .> FROM yellow_taxi_trips_part_buck
+. . . . . . . . . . . . . . . . . . . . . . .> LIMIT 3;
++-----------+-----------+----------------------+----------------------+-------+
+|  trip_id  | vendorid  |      pickup_ts       |      dropoff_ts      | year  |
++-----------+-----------+----------------------+----------------------+-------+
+| 7880445   | 2         | 2007-12-05 18:45:00  | 2007-12-05 19:02:00  | 2007  |
+| 41238536  | 2         | 2008-12-31 23:04:21  | 2008-12-31 23:32:25  | 2008  |
+| 7283613   | 2         | 2009-01-01 00:19:34  | 2009-01-01 01:10:21  | 2009  |
++-----------+-----------+----------------------+----------------------+-------+
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> -- 8. Drop original external table
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> DROP TABLE yellow_taxi_trips;
+0: jdbc:hive2://hadoop-03.uni.innopolis.ru:10> 

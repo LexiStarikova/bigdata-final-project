@@ -1,0 +1,127 @@
+{
+  "type" : "record",
+  "name" : "yellow_taxi_trips",
+  "doc" : "Sqoop import of yellow_taxi_trips",
+  "fields" : [ {
+    "name" : "trip_id",
+    "type" : [ "null", "long" ],
+    "default" : null,
+    "columnName" : "trip_id",
+    "sqlType" : "-5"
+  }, {
+    "name" : "vendorid",
+    "type" : [ "null", "int" ],
+    "default" : null,
+    "columnName" : "vendorid",
+    "sqlType" : "4"
+  }, {
+    "name" : "tpep_pickup_datetime",
+    "type" : [ "null", "long" ],
+    "default" : null,
+    "columnName" : "tpep_pickup_datetime",
+    "sqlType" : "93"
+  }, {
+    "name" : "tpep_dropoff_datetime",
+    "type" : [ "null", "long" ],
+    "default" : null,
+    "columnName" : "tpep_dropoff_datetime",
+    "sqlType" : "93"
+  }, {
+    "name" : "passenger_count",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "passenger_count",
+    "sqlType" : "8"
+  }, {
+    "name" : "trip_distance",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "trip_distance",
+    "sqlType" : "8"
+  }, {
+    "name" : "ratecodeid",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "ratecodeid",
+    "sqlType" : "8"
+  }, {
+    "name" : "store_and_fwd_flag",
+    "type" : [ "null", "string" ],
+    "default" : null,
+    "columnName" : "store_and_fwd_flag",
+    "sqlType" : "12"
+  }, {
+    "name" : "pulocationid",
+    "type" : [ "null", "int" ],
+    "default" : null,
+    "columnName" : "pulocationid",
+    "sqlType" : "4"
+  }, {
+    "name" : "dolocationid",
+    "type" : [ "null", "int" ],
+    "default" : null,
+    "columnName" : "dolocationid",
+    "sqlType" : "4"
+  }, {
+    "name" : "payment_type",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "payment_type",
+    "sqlType" : "8"
+  }, {
+    "name" : "fare_amount",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "fare_amount",
+    "sqlType" : "8"
+  }, {
+    "name" : "extra",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "extra",
+    "sqlType" : "8"
+  }, {
+    "name" : "mta_tax",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "mta_tax",
+    "sqlType" : "8"
+  }, {
+    "name" : "tip_amount",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "tip_amount",
+    "sqlType" : "8"
+  }, {
+    "name" : "tolls_amount",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "tolls_amount",
+    "sqlType" : "8"
+  }, {
+    "name" : "improvement_surcharge",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "improvement_surcharge",
+    "sqlType" : "8"
+  }, {
+    "name" : "total_amount",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "total_amount",
+    "sqlType" : "8"
+  }, {
+    "name" : "congestion_surcharge",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "congestion_surcharge",
+    "sqlType" : "8"
+  }, {
+    "name" : "airport_fee",
+    "type" : [ "null", "double" ],
+    "default" : null,
+    "columnName" : "airport_fee",
+    "sqlType" : "8"
+  } ],
+  "tableName" : "yellow_taxi_trips"
+}

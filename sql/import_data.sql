@@ -1,0 +1,10 @@
+-- NYC taxi data is loaded from Parquet in ./data via scripts/build_projectdb.py
+-- (psycopg2 COPY FROM STDIN in batches). This file documents the intended target table.
+--
+-- Equivalent logical load:
+-- COPY yellow_taxi_trips (
+--   vendorid, tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count,
+--   trip_distance, ratecodeid, store_and_fwd_flag, pulocationid, dolocationid,
+--   payment_type, fare_amount, extra, mta_tax, tip_amount, tolls_amount,
+--   improvement_surcharge, total_amount, congestion_surcharge, airport_fee
+-- ) FROM STDIN WITH (FORMAT csv, NULL '\N');
