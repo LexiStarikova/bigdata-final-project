@@ -178,6 +178,8 @@ secrets/.psql.pass
 
 # Dataset files (stored on cluster, not in repo)
 data/*.parquet
+data/**/*.parquet
+
 data/*.csv
 data/*.json
 data/*.xlsx
