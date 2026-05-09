@@ -1,7 +1,7 @@
 """
 Stage 3 — Predictive Data Analytics (Spark ML regression).
 
-Predict NYC Yellow Taxi trip tip_amount (credit-card trips). Two regressors tuned
+Predict NYC Yellow Taxi trip tip_amount (credit-card trips). Three regressors tuned
 via CrossValidator + ParamGridBuilder on train only; metrics on held-out test.
 
 Stage II compatibility (sql/db.hql):
@@ -13,8 +13,7 @@ On large Hive tables (>~10M rows): keep StandardScaler withMean=false (default).
 forces dense vectors and often OOMs the Spark driver during CV unless RAM is huge.
 Use STAGE3_DRIVER_MEM / executor memory and STAGE3_CV_PARALLELISM if the gateway is tight.
 On congested Yarn hosts, Executor Process Lost + ``Killed`` almost always indicates container RAM:
-pass STAGE3_YARN_STABLE=1 / STAGE3_EXEC_MEMORY_OVERHEAD (see scripts/stage3.sh) and optional
-``STAGE3_GBT_LITE=1`` for a smaller Gradient-Boosted Tree CV grid without changing LR.
+pass STAGE3_YARN_STABLE=1 / STAGE3_EXEC_MEMORY_OVERHEAD (see scripts/stage3.sh).
 
 On YARN, default fs is usually HDFS — writes to UNIX paths such as /home/user/... are resolved on
 HDFS and fail unless you explicitly use file:// staging. CSV and model dirs are staged under
@@ -25,6 +24,8 @@ Set ``STAGE3_LOCAL_WRITES_ONLY=1`` when the ``hdfs`` CLI is unavailable.
 Outputs (aligned with BS/MS Stage III checklist):
   output/model1_predictions.csv — label,prediction
   output/model2_predictions.csv — label,prediction
+  output/model3_predictions.csv — label,prediction
+  output/model{1,2,3}_best_params.json — selected CV params saved as soon as each CV fit finishes
   output/evaluation.csv — model-level accuracy and residual metrics on test data
   output/model_feature_signals.csv — top linear coefficients / tree feature importances
 """
@@ -32,6 +33,7 @@ Outputs (aligned with BS/MS Stage III checklist):
 # pylint: disable=too-many-locals,too-many-statements,too-many-arguments,too-many-positional-arguments,missing-function-docstring
 
 import argparse
+import csv
 import glob
 import json
 import math
@@ -47,8 +49,14 @@ from pyspark.sql.types import DoubleType
 
 from pyspark.ml import Pipeline
 from pyspark.ml.evaluation import RegressionEvaluator
-from pyspark.ml.feature import Imputer, OneHotEncoder, StandardScaler, StringIndexer, VectorAssembler
-from pyspark.ml.regression import GBTRegressor, LinearRegression
+from pyspark.ml.feature import (
+    Imputer,
+    OneHotEncoder,
+    StandardScaler,
+    StringIndexer,
+    VectorAssembler,
+)
+from pyspark.ml.regression import GBTRegressor, LinearRegression, RandomForestRegressor
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 
 # Stage II hive column aliases (snake/lowercase → TLC-style names engineer_features expects)
@@ -93,6 +101,26 @@ def parse_args():
         help="Optional 0<s<=1 uniform sample BEFORE filters for quick debugging",
     )
     parser.add_argument("--cv-folds", type=int, default=3)
+    parser.add_argument(
+        "--cv-sample-size",
+        type=int,
+        default=int(os.environ.get("STAGE3_CV_SAMPLE_SIZE", "4800")),
+        help=(
+            "Maximum representative training rows used only for CV grid search. "
+            "The selected params are refit on the full train split. "
+            "Env STAGE3_CV_SAMPLE_SIZE."
+        ),
+    )
+    parser.add_argument(
+        "--start-model",
+        type=int,
+        choices=(1, 2, 3),
+        default=int(os.environ.get("STAGE3_START_MODEL", "1")),
+        help=(
+            "Resume from this model number. Earlier models are not retrained; "
+            "their existing prediction CSVs under --output-dir are used for metrics."
+        ),
+    )
     parser.add_argument(
         "--parallelism",
         type=int,
@@ -289,7 +317,7 @@ def coerce_epoch_ms_pickup_dropoff(raw_df):
 
 
 def engineer_features(raw_df):
-    """Regression target tip_amount with cyclical time encodings."""
+    """Regression target tip_amount with trip-context and pickup-time features."""
     df0 = unify_stage2_columns(raw_df)
     df0 = coerce_epoch_ms_pickup_dropoff(df0)
 
@@ -313,7 +341,6 @@ def engineer_features(raw_df):
             / F.lit(60.0),
         )
         .filter(F.col("trip_duration_min").between(F.lit(1), F.lit(180)))
-        .withColumn("pickup_year", F.year("tpep_pickup_datetime").cast(DoubleType()))
         .withColumn("_m", F.month("tpep_pickup_datetime").cast(DoubleType()))
         .withColumn("_hh", F.hour("tpep_pickup_datetime").cast(DoubleType()))
         .withColumn("_dow0", (F.dayofweek("tpep_pickup_datetime") - F.lit(1)).cast(DoubleType()))
@@ -321,24 +348,14 @@ def engineer_features(raw_df):
         .withColumn("pickup_month_cos", F.cos(tau * F.col("_m") / F.lit(12.0)))
         .withColumn("pickup_hour_sin", F.sin(tau * F.col("_hh") / F.lit(24.0)))
         .withColumn("pickup_hour_cos", F.cos(tau * F.col("_hh") / F.lit(24.0)))
-        .withColumn(
-            "pickup_dow_sin",
-            F.sin(tau * F.col("_dow0") / F.lit(7.0)),
-        )
-        .withColumn(
-            "pickup_dow_cos",
-            F.cos(tau * F.col("_dow0") / F.lit(7.0)),
-        )
+        .withColumn("pickup_dow_sin", F.sin(tau * F.col("_dow0") / F.lit(7.0)))
+        .withColumn("pickup_dow_cos", F.cos(tau * F.col("_dow0") / F.lit(7.0)))
         .withColumn(
             "is_weekend",
             F.when(
                 F.dayofweek("tpep_pickup_datetime").isin(1, 7),
                 F.lit(1.0),
             ).otherwise(F.lit(0.0)),
-        )
-        .withColumn(
-            "avg_speed_mph",
-            F.col("trip_distance") / (F.col("trip_duration_min") / F.lit(60.0)),
         )
         .withColumn(
             "rush_hour",
@@ -351,6 +368,7 @@ def engineer_features(raw_df):
             F.when((F.col("_hh") >= F.lit(22.0)) | (F.col("_hh") <= F.lit(5.0)), F.lit(1.0))
             .otherwise(F.lit(0.0)),
         )
+        .withColumn("__split_ts", F.unix_timestamp("tpep_pickup_datetime").cast(DoubleType()))
         .drop("_m", "_hh", "_dow0")
     )
 
@@ -359,21 +377,6 @@ def engineer_features(raw_df):
             "airport_rate",
             F.when(F.col("RatecodeID").isin(2, 3), F.lit(1.0)).otherwise(F.lit(0.0)),
         )
-    if {"fare_amount", "trip_distance"} <= set(df.columns):
-        df = df.withColumn(
-            "fare_per_mile",
-            F.col("fare_amount") / F.greatest(F.col("trip_distance"), F.lit(0.1)),
-        )
-        df = df.withColumn(
-            "distance_fare_interaction",
-            F.col("trip_distance") * F.col("fare_amount"),
-        )
-    if {"fare_amount", "trip_duration_min"} <= set(df.columns):
-        df = df.withColumn(
-            "fare_per_minute",
-            F.col("fare_amount") / F.greatest(F.col("trip_duration_min"), F.lit(1.0)),
-        )
-
     pre_tip_cols = [
         c
         for c in (
@@ -399,14 +402,6 @@ def engineer_features(raw_df):
         "PULocationID",
         "DOLocationID",
         "fare_amount",
-        "extra",
-        "mta_tax",
-        "tolls_amount",
-        "congestion_surcharge",
-        "airport_fee",
-        "improvement_surcharge",
-        "pickup_year",
-        "trip_duration_min",
         "pickup_month_sin",
         "pickup_month_cos",
         "pickup_hour_sin",
@@ -416,15 +411,11 @@ def engineer_features(raw_df):
         "is_weekend",
         "rush_hour",
         "night_trip",
-        "avg_speed_mph",
         "airport_rate",
-        "fare_per_mile",
-        "fare_per_minute",
-        "distance_fare_interaction",
         "pre_tip_amount",
     ]
     use = [c for c in cand if c in df.columns]
-    return df.select(*(use + ["tip_amount"]))
+    return df.select(*(use + ["__split_ts", "tip_amount"]))
 
 
 def load_hive_table(spark, database, table):
@@ -526,6 +517,15 @@ def save_ml_pipeline_local(pipeline_model, models_root: str, name: str):
     pipeline_model.write().overwrite().save(_local_file_uri(local_dest))
 
 
+def write_json_local(payload, outfile: str):
+    final_path = os.path.abspath(outfile)
+    parent_dir = os.path.dirname(final_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    with open(final_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, default=str)
+
+
 def summarize_params(model_stage):
     m = {}
     for k, v in model_stage.extractParamMap().items():
@@ -538,7 +538,100 @@ def summarize_params(model_stage):
     return m
 
 
-def fit_cv_and_pick_best(train, pipeline, grid, evaluator, folds, parallelism, seed):
+def save_best_params(output_root: str, model_key: str, model_name: str, pipeline_model):
+    payload = {
+        "model": model_name,
+        "best_params_from_cv": summarize_params(pipeline_model.stages[-1]),
+    }
+    write_json_local(payload, os.path.join(output_root, f"{model_key}_best_params.json"))
+    return payload["best_params_from_cv"]
+
+
+def load_saved_best_params(output_root: str, model_key: str):
+    path = os.path.join(output_root, f"{model_key}_best_params.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return payload.get("best_params_from_cv")
+
+
+def compute_prediction_csv_metrics(prediction_csv: str):
+    path = os.path.abspath(prediction_csv)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"Cannot resume: missing existing prediction CSV {path!r}",
+        )
+
+    n = 0
+    label_sum = 0.0
+    label_sq_sum = 0.0
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            label = float(row["label"])
+            n += 1
+            label_sum += label
+            label_sq_sum += label * label
+    if n == 0:
+        raise RuntimeError(f"Cannot compute metrics from empty prediction CSV {path!r}")
+
+    ss_tot = label_sq_sum - (label_sum * label_sum / n)
+    err_sum = 0.0
+    err_sq_sum = 0.0
+    abs_err_sum = 0.0
+    within_1 = 0
+    within_2 = 0
+    abs_errors = []
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            label = float(row["label"])
+            prediction = float(row["prediction"])
+            err = prediction - label
+            abs_err = abs(err)
+            err_sum += err
+            err_sq_sum += err * err
+            abs_err_sum += abs_err
+            within_1 += int(abs_err <= 1.0)
+            within_2 += int(abs_err <= 2.0)
+            abs_errors.append(abs_err)
+
+    abs_errors.sort()
+
+    def percentile(q):
+        return float(abs_errors[int(round((len(abs_errors) - 1) * q))])
+
+    mean_error = err_sum / n
+    label_variance = ss_tot / n
+    residual_variance = (err_sq_sum / n) - (mean_error * mean_error)
+    return {
+        "rmse": math.sqrt(err_sq_sum / n),
+        "mae": abs_err_sum / n,
+        "r2": 0.0 if ss_tot == 0.0 else 1.0 - (err_sq_sum / ss_tot),
+        "explained_variance": (
+            0.0 if label_variance == 0.0 else 1.0 - (residual_variance / label_variance)
+        ),
+        "mean_error": mean_error,
+        "median_abs_error": percentile(0.5),
+        "p90_abs_error": percentile(0.9),
+        "p95_abs_error": percentile(0.95),
+        "within_1_dollar": within_1 / n,
+        "within_2_dollars": within_2 / n,
+    }
+
+
+def build_cv_sample(train, train_n, max_rows, seed):
+    if max_rows <= 0:
+        raise ValueError("--cv-sample-size must be positive")
+    if train_n <= max_rows:
+        return train, train_n
+
+    fraction = min(1.0, (float(max_rows) * 3.0) / float(train_n))
+    # Uniform sample from the chronological train split; random ordering avoids partition-biased caps.
+    sample = train.sample(withReplacement=False, fraction=fraction, seed=seed)
+    return sample.orderBy(F.rand(seed)).limit(max_rows), None
+
+
+def fit_cv_and_pick_best(train, cv_train, pipeline, grid, evaluator, folds, parallelism, seed):
     cv = CrossValidator(
         estimator=pipeline,
         estimatorParamMaps=grid,
@@ -547,7 +640,15 @@ def fit_cv_and_pick_best(train, pipeline, grid, evaluator, folds, parallelism, s
         parallelism=parallelism,
         seed=seed,
     )
-    return cv.fit(train)
+    cv_model = cv.fit(cv_train)
+    metrics = list(cv_model.avgMetrics)
+    if not metrics:
+        return cv_model.bestModel
+
+    chooser = max if evaluator.isLargerBetter() else min
+    best_index = chooser(range(len(metrics)), key=lambda i: metrics[i])
+    best_param_map = grid[best_index]
+    return pipeline.copy(best_param_map).fit(train)
 
 
 def compute_regression_metrics(pred):
@@ -556,9 +657,21 @@ def compute_regression_metrics(pred):
         F.abs(F.col("prediction") - F.col("label")),
     )
     evaluators = {
-        "rmse": RegressionEvaluator(labelCol="label", predictionCol="prediction", metricName="rmse"),
-        "mae": RegressionEvaluator(labelCol="label", predictionCol="prediction", metricName="mae"),
-        "r2": RegressionEvaluator(labelCol="label", predictionCol="prediction", metricName="r2"),
+        "rmse": RegressionEvaluator(
+            labelCol="label",
+            predictionCol="prediction",
+            metricName="rmse",
+        ),
+        "mae": RegressionEvaluator(
+            labelCol="label",
+            predictionCol="prediction",
+            metricName="mae",
+        ),
+        "r2": RegressionEvaluator(
+            labelCol="label",
+            predictionCol="prediction",
+            metricName="r2",
+        ),
         "explained_variance": RegressionEvaluator(
             labelCol="label",
             predictionCol="prediction",
@@ -597,20 +710,29 @@ def evaluate_test(best_pipeline, test_df):
     return pred, compute_regression_metrics(pred)
 
 
+def temporal_train_test_split(frame, split_col="__split_ts", train_ratio=0.70):
+    clean = frame.filter(F.col(split_col).isNotNull())
+    cutoffs = clean.approxQuantile(split_col, [train_ratio], 0.001)
+    if not cutoffs:
+        raise RuntimeError("Temporal split has no valid pickup timestamps.")
+    cutoff = cutoffs[0]
+    train = clean.filter(F.col(split_col) <= F.lit(cutoff)).drop(split_col)
+    test = clean.filter(F.col(split_col) > F.lit(cutoff)).drop(split_col)
+    return train, test, cutoff
+
+
 def scaler_use_mean(cli_flag: bool) -> bool:
     if cli_flag:
         return True
     return os.environ.get("STAGE3_SCALER_WITH_MEAN", "").lower() in ("1", "true", "yes")
 
 
-def strong_model_lite_requested() -> bool:
-    return os.environ.get("STAGE3_GBT_LITE", "").lower() in ("1", "true", "yes") or os.environ.get(
-        "STAGE3_RF_LITE",
-        "",
-    ).lower() in ("1", "true", "yes")
-
-
-def make_preprocessing_stages(features, categorical_features, with_mean_center: bool, scale_features: bool):
+def make_preprocessing_stages(
+    features,
+    categorical_features,
+    with_mean_center: bool,
+    scale_features: bool,
+):
     categorical = [c for c in categorical_features if c in features]
     numeric = [c for c in features if c not in categorical]
     stages = []
@@ -622,7 +744,9 @@ def make_preprocessing_stages(features, categorical_features, with_mean_center: 
     if categorical:
         idx_out = [c + "__idx" for c in categorical]
         oh_out = [c + "__oh" for c in categorical]
-        stages.append(StringIndexer(inputCols=categorical, outputCols=idx_out, handleInvalid="keep"))
+        stages.append(
+            StringIndexer(inputCols=categorical, outputCols=idx_out, handleInvalid="keep"),
+        )
         stages.append(OneHotEncoder(inputCols=idx_out, outputCols=oh_out, dropLast=False))
         assembler_inputs.extend(oh_out)
     assembler = VectorAssembler(
@@ -724,13 +848,13 @@ def main():
         raw = raw.sample(withReplacement=False, fraction=s, seed=args.random_seed)
 
     ml_ready = engineer_features(raw).withColumnRenamed("tip_amount", "label")
-    feats = [c for c in ml_ready.columns if c != "label"]
-    ml_ready = ml_ready.select(*feats, "label")
+    feats = [c for c in ml_ready.columns if c not in ("label", "__split_ts")]
+    ml_ready = ml_ready.select(*feats, "__split_ts", "label")
 
     md = StorageLevel.MEMORY_AND_DISK
     ml_ready = ml_ready.persist(md)
 
-    train_df, test_df = ml_ready.randomSplit([0.7, 0.3], seed=args.random_seed)
+    train_df, test_df, split_cutoff = temporal_train_test_split(ml_ready)
     train_df = train_df.persist(md)
     test_df = test_df.persist(md)
 
@@ -739,13 +863,33 @@ def main():
     n = train_n + test_n
     if n == 0:
         raise RuntimeError("Empty dataframe after preprocessing (check filters/input).")
+    if train_n == 0 or test_n == 0:
+        raise RuntimeError(
+            "Temporal train/test split produced an empty side; check pickup timestamps.",
+        )
+
+    cv_train_df, cv_sample_n = build_cv_sample(
+        train_df,
+        train_n,
+        args.cv_sample_size,
+        args.random_seed,
+    )
+    cv_train_df = cv_train_df.persist(md)
+    cv_sample_n = cv_train_df.count() if cv_sample_n is None else cv_sample_n
+    if cv_sample_n == 0:
+        raise RuntimeError("CV sample is empty; increase --cv-sample-size.")
+    if cv_sample_n < args.cv_folds:
+        raise RuntimeError(
+            f"CV sample has {cv_sample_n} rows, fewer than --cv-folds={args.cv_folds}.",
+        )
 
     ml_ready.unpersist(blocking=True)
     scale_center = scaler_use_mean(args.scaler_with_mean)
     print(
         f"[stage3] source={data_note} rows={n:,} train={train_n:,} "
-        f"test={test_n:,} features={len(feats)} scaler_with_mean={scale_center} "
-        f"cv_parallelism={args.parallelism}",
+        f"test={test_n:,} cv_sample={cv_sample_n:,} features={len(feats)} "
+        f"scaler_with_mean={scale_center} "
+        f"cv_parallelism={args.parallelism} split_cutoff={split_cutoff}",
     )
 
     cv_evaluator = RegressionEvaluator(
@@ -763,72 +907,102 @@ def main():
     )
     lr_grid = (
         ParamGridBuilder()
-        .addGrid(lr.regParam, [1e-3, 1e-2, 1e-1])
+        .addGrid(lr.regParam, [1e-4, 1e-3, 1e-2])
         .addGrid(lr.elasticNetParam, [0.0, 0.5, 1.0])
+        .addGrid(lr.tol, [1e-4, 1e-5, 1e-6])
         .build()
     )
     lr_pipe = Pipeline(
         stages=make_preprocessing_stages(feats, CATEGORICAL_FEATURES, scale_center, True) + [lr],
     )
 
-    lr_cv_model = fit_cv_and_pick_best(
-        train_df,
-        lr_pipe,
-        lr_grid,
-        cv_evaluator,
-        folds=args.cv_folds,
-        parallelism=args.parallelism,
+    model1_prediction_csv = os.path.join(output_root, "model1_predictions.csv")
+    model2_prediction_csv = os.path.join(output_root, "model2_predictions.csv")
+    model3_prediction_csv = os.path.join(output_root, "model3_predictions.csv")
+
+    lr_best = None
+    if args.start_model <= 1:
+        lr_best = fit_cv_and_pick_best(
+            train_df,
+            cv_train_df,
+            lr_pipe,
+            lr_grid,
+            cv_evaluator,
+            folds=args.cv_folds,
+            parallelism=args.parallelism,
+            seed=args.random_seed,
+        )
+        lr_params = save_best_params(output_root, "model1", "LinearRegression", lr_best)
+        preds1, lr_metrics = evaluate_test(lr_best, test_df)
+
+        write_single_partition_csv(preds1, model1_prediction_csv)
+        save_ml_pipeline_local(lr_best, models_root, "model1_lr")
+    else:
+        print(f"[stage3] skipping model1; using existing predictions {model1_prediction_csv}")
+        lr_params = load_saved_best_params(output_root, "model1")
+        lr_metrics = compute_prediction_csv_metrics(model1_prediction_csv)
+
+    rf = RandomForestRegressor(
+        labelCol="label",
+        featuresCol="features",
         seed=args.random_seed,
     )
-    lr_best = lr_cv_model.bestModel
-    preds1, lr_metrics = evaluate_test(lr_best, test_df)
+    rf_grid = (
+        ParamGridBuilder()
+        .addGrid(rf.numTrees, [20, 50, 100])
+        .addGrid(rf.maxDepth, [6, 8, 10])
+        .addGrid(rf.minInstancesPerNode, [1, 5, 10])
+        .build()
+    )
+    rf_pipe = Pipeline(
+        stages=make_preprocessing_stages(feats, CATEGORICAL_FEATURES, scale_center, False) + [rf],
+    )
 
-    write_single_partition_csv(preds1, os.path.join(output_root, "model1_predictions.csv"))
-    save_ml_pipeline_local(lr_best, models_root, "model1_lr")
-
-    gbt_lite = strong_model_lite_requested()
-    if gbt_lite:
-        gbt = GBTRegressor(
-            labelCol="label",
-            featuresCol="features",
+    rf_best = None
+    if args.start_model <= 2:
+        rf_best = fit_cv_and_pick_best(
+            train_df,
+            cv_train_df,
+            rf_pipe,
+            rf_grid,
+            cv_evaluator,
+            folds=args.cv_folds,
+            parallelism=args.parallelism,
             seed=args.random_seed,
-            maxIter=48,
-            maxDepth=5,
-            stepSize=0.05,
-            minInstancesPerNode=20,
         )
-        gbt_grid = (
-            ParamGridBuilder()
-            .addGrid(gbt.maxIter, [40, 60])
-            .addGrid(gbt.maxDepth, [4, 6])
-            .addGrid(gbt.minInstancesPerNode, [20])
-            .build()
-        )
-        print("[stage3] STAGE3_GBT_LITE=1: using reduced GBT grid/trees")
+        rf_params = save_best_params(output_root, "model2", "RandomForestRegressor", rf_best)
+        preds2, rf_metrics = evaluate_test(rf_best, test_df)
+
+        write_single_partition_csv(preds2, model2_prediction_csv)
+        save_ml_pipeline_local(rf_best, models_root, "model2_rf")
     else:
-        gbt = GBTRegressor(
-            labelCol="label",
-            featuresCol="features",
-            seed=args.random_seed,
-            maxIter=100,
-            maxDepth=7,
-            stepSize=0.05,
-            minInstancesPerNode=10,
-        )
-        gbt_grid = (
-            ParamGridBuilder()
-            .addGrid(gbt.maxIter, [80, 120])
-            .addGrid(gbt.maxDepth, [5, 7])
-            .addGrid(gbt.stepSize, [0.03, 0.05])
-            .addGrid(gbt.minInstancesPerNode, [10])
-            .build()
-        )
+        print(f"[stage3] skipping model2; using existing predictions {model2_prediction_csv}")
+        rf_params = load_saved_best_params(output_root, "model2")
+        rf_metrics = compute_prediction_csv_metrics(model2_prediction_csv)
+
+    gbt = GBTRegressor(
+        labelCol="label",
+        featuresCol="features",
+        seed=args.random_seed,
+        maxIter=100,
+        maxDepth=7,
+        stepSize=0.05,
+        minInstancesPerNode=10,
+    )
+    gbt_grid = (
+        ParamGridBuilder()
+        .addGrid(gbt.maxDepth, [4, 6, 8])
+        .addGrid(gbt.stepSize, [0.03, 0.05, 0.08])
+        .addGrid(gbt.minInstancesPerNode, [5, 10, 20])
+        .build()
+    )
     gbt_pipe = Pipeline(
         stages=make_preprocessing_stages(feats, CATEGORICAL_FEATURES, scale_center, False) + [gbt],
     )
 
-    gbt_cv_model = fit_cv_and_pick_best(
+    gbt_best = fit_cv_and_pick_best(
         train_df,
+        cv_train_df,
         gbt_pipe,
         gbt_grid,
         cv_evaluator,
@@ -836,11 +1010,11 @@ def main():
         parallelism=args.parallelism,
         seed=args.random_seed,
     )
-    gbt_best = gbt_cv_model.bestModel
-    preds2, gbt_metrics = evaluate_test(gbt_best, test_df)
+    gbt_params = save_best_params(output_root, "model3", "GBTRegressor", gbt_best)
+    preds3, gbt_metrics = evaluate_test(gbt_best, test_df)
 
-    write_single_partition_csv(preds2, os.path.join(output_root, "model2_predictions.csv"))
-    save_ml_pipeline_local(gbt_best, models_root, "model2_gbt")
+    write_single_partition_csv(preds3, model3_prediction_csv)
+    save_ml_pipeline_local(gbt_best, models_root, "model3_gbt")
 
     rows = (
         (
@@ -855,6 +1029,19 @@ def main():
             lr_metrics["p95_abs_error"],
             lr_metrics["within_1_dollar"],
             lr_metrics["within_2_dollars"],
+        ),
+        (
+            "RandomForestRegressor",
+            rf_metrics["rmse"],
+            rf_metrics["mae"],
+            rf_metrics["r2"],
+            rf_metrics["explained_variance"],
+            rf_metrics["mean_error"],
+            rf_metrics["median_abs_error"],
+            rf_metrics["p90_abs_error"],
+            rf_metrics["p95_abs_error"],
+            rf_metrics["within_1_dollar"],
+            rf_metrics["within_2_dollars"],
         ),
         (
             "GBTRegressor",
@@ -888,13 +1075,12 @@ def main():
     )
     write_single_partition_csv(comp, os.path.join(output_root, "evaluation.csv"))
 
-    lr_stage = lr_best.stages[-1]
-    gbt_stage = gbt_best.stages[-1]
-    signal_rows = top_model_signal_rows("LinearRegression", lr_best, test_df) + top_model_signal_rows(
-        "GBTRegressor",
-        gbt_best,
-        test_df,
-    )
+    signal_rows = []
+    if lr_best is not None:
+        signal_rows += top_model_signal_rows("LinearRegression", lr_best, test_df)
+    if rf_best is not None:
+        signal_rows += top_model_signal_rows("RandomForestRegressor", rf_best, test_df)
+    signal_rows += top_model_signal_rows("GBTRegressor", gbt_best, test_df)
     if signal_rows:
         signal_df = spark.createDataFrame(
             signal_rows,
@@ -910,22 +1096,33 @@ def main():
         "data_source": str(data_note),
         "train_rows": int(train_n),
         "test_rows": int(test_n),
+        "cv_sample_rows": int(cv_sample_n),
+        "cv_sample_max_rows": int(args.cv_sample_size),
+        "split_strategy": "chronological_70_30_by_pickup_time",
+        "split_cutoff_unix_seconds": float(split_cutoff),
         "scaler_with_mean": bool(scale_center),
         "cross_validation_rmse_focus": True,
         "prediction_postprocess": "negative predictions clipped to 0.0 for metrics and CSV exports",
         "model1": {
             "name": "LinearRegression",
             "test_metrics": lr_metrics,
-            "best_params_from_cv": summarize_params(lr_stage),
-            "prediction_csv": os.path.join(output_root, "model1_predictions.csv"),
+            "best_params_from_cv": lr_params,
+            "prediction_csv": model1_prediction_csv,
             "persisted_pipeline": os.path.join(models_root, "model1_lr"),
         },
         "model2": {
+            "name": "RandomForestRegressor",
+            "test_metrics": rf_metrics,
+            "best_params_from_cv": rf_params,
+            "prediction_csv": model2_prediction_csv,
+            "persisted_pipeline": os.path.join(models_root, "model2_rf"),
+        },
+        "model3": {
             "name": "GBTRegressor",
             "test_metrics": gbt_metrics,
-            "best_params_from_cv": summarize_params(gbt_stage),
-            "prediction_csv": os.path.join(output_root, "model2_predictions.csv"),
-            "persisted_pipeline": os.path.join(models_root, "model2_gbt"),
+            "best_params_from_cv": gbt_params,
+            "prediction_csv": model3_prediction_csv,
+            "persisted_pipeline": os.path.join(models_root, "model3_gbt"),
         },
         "feature_signal_csv": os.path.join(output_root, "model_feature_signals.csv"),
     }
