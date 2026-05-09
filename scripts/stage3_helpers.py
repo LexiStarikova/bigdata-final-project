@@ -30,10 +30,7 @@ STAGE2_TO_TLC_COLUMNS = (
 CATEGORICAL_FEATURES = ("VendorID", "RatecodeID", "PULocationID", "DOLocationID")
 
 
-# ---------------------------------------------------------------------------
-#  URI / path helpers
-# ---------------------------------------------------------------------------
-
+# URI / path helpers
 def _remote_data_uri(path: str) -> bool:
     """Return True when *path* points to a remote (non-local) filesystem."""
     trimmed = path.strip().lower()
@@ -60,10 +57,7 @@ def resolve_filesystem_data_dir(arg: str) -> str:
     return p if _remote_data_uri(p) else os.path.abspath(p)
 
 
-# ---------------------------------------------------------------------------
-#  Hive helpers
-# ---------------------------------------------------------------------------
-
+# Hive helpers
 def hive_table_qualifier(database, table):
     """Build ``database.table`` from separate args or a dot-qualified table."""
     if not table:
@@ -90,10 +84,7 @@ def load_hive_table(spark, database, table):
     return spark.table(qual)
 
 
-# ---------------------------------------------------------------------------
-#  Data discovery and loading
-# ---------------------------------------------------------------------------
-
+# Data discovery and loading
 def discover_parquet(data_dir: str):
     """Find TLC-style yellow taxi Parquet files under *data_dir*."""
     shallow = sorted(glob.glob(os.path.join(data_dir, "yellow_tripdata_*.parquet")))
@@ -140,10 +131,7 @@ def load_raw(spark, data_dir: str):
     )
 
 
-# ---------------------------------------------------------------------------
-#  Column unification / coercion
-# ---------------------------------------------------------------------------
-
+# Column unification / coercion
 def unify_stage2_columns(raw_df):
     """Rename Stage II lowercase Avro cols to TLC-style names."""
     lowers = {c.lower(): c for c in raw_df.columns}
@@ -197,10 +185,7 @@ def coerce_epoch_ms_pickup_dropoff(raw_df):
     return out
 
 
-# ---------------------------------------------------------------------------
-#  HDFS / local I/O helpers
-# ---------------------------------------------------------------------------
-
+# HDFS / local I/O helpers
 def _hdfs_scratch_base():
     """Default HDFS scratch directory for CSV/model staging."""
     linux_user = os.environ.get("USER", os.environ.get("LOGNAME", "user"))
@@ -306,10 +291,7 @@ def write_json_local(payload, outfile: str):
         json.dump(payload, fh, indent=2, default=str)
 
 
-# ---------------------------------------------------------------------------
-#  Model params helpers
-# ---------------------------------------------------------------------------
-
+# Model params helpers
 def summarize_params(model_stage):
     """Extract hyper-parameter map from a fitted Spark ML stage."""
     m = {}
@@ -343,10 +325,7 @@ def load_saved_best_params(output_root: str, model_key: str):
     return payload.get("best_params_from_cv")
 
 
-# ---------------------------------------------------------------------------
-#  Prediction CSV metrics (offline / resume path)
-# ---------------------------------------------------------------------------
-
+# Prediction CSV metrics (offline / resume path)
 def _csv_label_stats(path):
     """First pass: count rows and accumulate label sums."""
     n, label_sum, label_sq_sum = 0, 0.0, 0.0
@@ -416,10 +395,37 @@ def compute_prediction_csv_metrics(prediction_csv: str):
     }
 
 
-# ---------------------------------------------------------------------------
-#  CV sample builder
-# ---------------------------------------------------------------------------
+# Train/test JSON persistence
+def _hdfs_data_base():
+    """HDFS base for train/test JSON, aligned with project HDFS layout."""
+    linux_user = os.environ.get("USER", os.environ.get("LOGNAME", "user"))
+    return f"hdfs:///user/{linux_user}/project/data"
 
+
+def save_train_test_json(train_df, test_df):
+    """Save train and test splits as JSON to HDFS and pull to local data/."""
+    base = _hdfs_data_base()
+    hdfs_train = f"{base}/train"
+    hdfs_test = f"{base}/test"
+
+    train_df.select("features", "label").coalesce(1).write.mode("overwrite").json(hdfs_train)
+    test_df.select("features", "label").coalesce(1).write.mode("overwrite").json(hdfs_test)
+    print(f"[stage3] Saved train/test JSON → {hdfs_train}, {hdfs_test}")
+
+    if shutil.which("hdfs") is not None:
+        os.makedirs("data", exist_ok=True)
+        for hdfs_path, local_path in [(hdfs_train, "data/train.json"),
+                                      (hdfs_test, "data/test.json")]:
+            try:
+                if os.path.isfile(local_path):
+                    os.remove(local_path)
+                _hdfs_dfs(["-getmerge", hdfs_path, local_path])
+                print(f"[stage3] Pulled {hdfs_path} → {local_path}")
+            except subprocess.CalledProcessError:
+                print(f"[stage3] Warning: could not pull {hdfs_path} to {local_path}")
+
+
+# CV sample builder
 def build_cv_sample(train, train_n, max_rows, seed):
     """Down-sample training data for cross-validation grid search."""
     if max_rows <= 0:
@@ -433,10 +439,7 @@ def build_cv_sample(train, train_n, max_rows, seed):
     return sample.orderBy(F.rand(seed)).limit(max_rows), None
 
 
-# ---------------------------------------------------------------------------
-#  CV training
-# ---------------------------------------------------------------------------
-
+# CV training
 def fit_cv_and_pick_best(
     train, cv_train, pipeline, grid, evaluator, **cv_kwargs,
 ):
@@ -458,10 +461,8 @@ def fit_cv_and_pick_best(
     return pipeline.copy(best_param_map).fit(train)
 
 
-# ---------------------------------------------------------------------------
-#  Spark-side regression metrics
-# ---------------------------------------------------------------------------
 
+# Spark-side regression metrics
 def compute_regression_metrics(pred):
     """Compute full regression metric suite from a prediction DataFrame."""
     scored = pred.withColumn("error", F.col("prediction") - F.col("label")).withColumn(
@@ -523,10 +524,8 @@ def evaluate_test(best_pipeline, test_df):
     return pred, compute_regression_metrics(pred)
 
 
-# ---------------------------------------------------------------------------
-#  Temporal split
-# ---------------------------------------------------------------------------
 
+# Temporal split
 def temporal_train_test_split(frame, split_col="__split_ts", train_ratio=0.70):
     """Split by pickup timestamp quantile into train/test."""
     clean = frame.filter(F.col(split_col).isNotNull())
@@ -539,10 +538,7 @@ def temporal_train_test_split(frame, split_col="__split_ts", train_ratio=0.70):
     return train, test, cutoff
 
 
-# ---------------------------------------------------------------------------
-#  Scaler config
-# ---------------------------------------------------------------------------
-
+# Scaler config
 def scaler_use_mean(cli_flag: bool) -> bool:
     """Resolve whether StandardScaler should centre features."""
     if cli_flag:
@@ -550,10 +546,8 @@ def scaler_use_mean(cli_flag: bool) -> bool:
     return os.environ.get("STAGE3_SCALER_WITH_MEAN", "").lower() in ("1", "true", "yes")
 
 
-# ---------------------------------------------------------------------------
-#  Feature inspection
-# ---------------------------------------------------------------------------
 
+# Feature inspection
 def feature_names_from_pipeline(pipeline_model, ref_df):
     """Extract ordered feature names from a fitted pipeline's metadata."""
     schema = pipeline_model.transform(ref_df.limit(1)).schema

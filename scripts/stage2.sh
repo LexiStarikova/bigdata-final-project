@@ -85,7 +85,7 @@ echo "      Done. Output saved to output/hive_results.txt"
 #    - q12 : Late-night tipping (credit card only)
 
 echo ""
-echo "[3/5] Running sql/eda.hql (10 EDA queries)..."
+echo "[3/5] Running sql/eda.hql (12 EDA queries)..."
 
 ${BEELINE} -f sql/eda.hql \
     > output/eda_results.txt 2>/dev/null

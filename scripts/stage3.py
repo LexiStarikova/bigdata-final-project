@@ -66,6 +66,7 @@ from stage3_helpers import (
     resolve_filesystem_data_dir,
     save_best_params,
     save_ml_pipeline_local,
+    save_train_test_json,
     scaler_use_mean,
     temporal_train_test_split,
     top_model_signal_rows,
@@ -491,6 +492,9 @@ def _prepare_data(args, spark):
     _validate_splits(train_n, test_n, cv_sample_n, args.cv_folds)
 
     ml_ready.unpersist(blocking=True)
+
+    save_train_test_json(train_df, test_df)
+
     return {
         "feats": feats, "data_note": data_note, "split_cutoff": split_cutoff,
         "train_df": train_df, "test_df": test_df, "cv_train_df": cv_train_df,
@@ -574,7 +578,8 @@ def main():
 
     specs = _build_model_specs(ctx["feats"], scale_center, args.random_seed)
     train_ctx = {
-        "args": args, "train_df": ctx["train_df"], "cv_train_df": ctx["cv_train_df"],
+        "args": args, "train_df": ctx["train_df"],
+        "cv_train_df": ctx["cv_train_df"],
         "cv_evaluator": cv_evaluator, "test_df": ctx["test_df"],
         "output_root": output_root, "models_root": models_root,
     }

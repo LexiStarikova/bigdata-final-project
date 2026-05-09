@@ -95,7 +95,7 @@ else
 fi
 
 echo "Copy generated Java files to output/ root for checklist visibility …"
-find output/sqoop_codegen -maxdepth 1 -name '*.java' -exec cp -t output/ {} + 2>/dev/null || true
+find output/sqoop_codegen -name '*.java' -exec cp -t output/ {} + 2>/dev/null || true
 
 echo "Stage 1 finished. HDFS: hdfs://${WAREHOUSE}/yellow_taxi_trips/"
 echo "Report: justify Avro + Snappy vs Parquet in your Stage I write-up (see course PDF)."
