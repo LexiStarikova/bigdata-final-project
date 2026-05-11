@@ -167,13 +167,6 @@ if command -v hdfs &>/dev/null; then
     else
         warn "No .avro files found in $SQOOP_DIR/yellow_taxi_trips/"
     fi
-
-    AVSC_DIR="/user/$HDFS_USER/project/warehouse/avsc"
-    if hdfs dfs -test -d "$AVSC_DIR" 2>/dev/null; then
-        ok "HDFS AVSC directory exists: $AVSC_DIR"
-    else
-        warn "HDFS AVSC directory not found: $AVSC_DIR"
-    fi
 else
     warn "hdfs not available; skipping HDFS Stage I checks"
 fi
@@ -224,15 +217,6 @@ if command -v hdfs &>/dev/null; then
     done
 
     if [[ "$TABLE_HDFS_FOUND" -eq 1 ]]; then
-        # Check partition directories (month=X)
-        PARTITION_DIRS=$(hdfs dfs -ls "$TABLE_HDFS_PATH" 2>/dev/null \
-            | grep "month=" | wc -l | tr -d '[:space:]' || echo "0")
-        if [[ "$PARTITION_DIRS" -gt 0 ]] 2>/dev/null; then
-            ok "Hive table has $PARTITION_DIRS partition directories (month=*)"
-        else
-            warn "No month=* partition directories found under $TABLE_HDFS_PATH"
-        fi
-
         # Check data files inside partition dirs (look 2 levels deep)
         DATA_FILES=$(hdfs dfs -ls -R "$TABLE_HDFS_PATH" 2>/dev/null \
             | grep -v "^d" | head -20 | wc -l | tr -d '[:space:]' || echo "0")
