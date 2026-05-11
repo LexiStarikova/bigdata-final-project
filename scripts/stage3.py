@@ -53,6 +53,7 @@ from pyspark.ml.regression import GBTRegressor, LinearRegression, RandomForestRe
 from pyspark.ml.tuning import ParamGridBuilder
 
 from stage3_helpers import (
+    CANDIDATE_FEATURE_COLUMNS,
     CATEGORICAL_FEATURES,
     build_cv_sample,
     coerce_epoch_ms_pickup_dropoff,
@@ -264,27 +265,7 @@ def engineer_features(raw_df):
         total_expr = sum((F.coalesce(F.col(c), F.lit(0.0)) for c in pre_tip_cols), F.lit(0.0))
         filtered_df = filtered_df.withColumn("pre_tip_amount", total_expr)
 
-    cand = [
-        "VendorID",
-        "passenger_count",
-        "trip_distance",
-        "RatecodeID",
-        "PULocationID",
-        "DOLocationID",
-        "fare_amount",
-        "pickup_month_sin",
-        "pickup_month_cos",
-        "pickup_hour_sin",
-        "pickup_hour_cos",
-        "pickup_dow_sin",
-        "pickup_dow_cos",
-        "is_weekend",
-        "rush_hour",
-        "night_trip",
-        "airport_rate",
-        "pre_tip_amount",
-    ]
-    use = [c for c in cand if c in filtered_df.columns]
+    use = [c for c in CANDIDATE_FEATURE_COLUMNS if c in filtered_df.columns]
     return filtered_df.select(*(use + ["__split_ts", "tip_amount"]))
 
 

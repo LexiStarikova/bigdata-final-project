@@ -167,39 +167,46 @@ section "3. Stage II — Hive database, tables, and EDA"
 if command -v beeline &>/dev/null; then
     HIVE_PASS="$(head -1 secrets/.hive.pass 2>/dev/null || echo '')"
     HIVE_SERVER="${HIVE_SERVER:-jdbc:hive2://hadoop-03.uni.innopolis.ru:10001}"
+    BEELINE_TIMEOUT=30
 
     run_beeline() {
-        beeline -u "$HIVE_SERVER" -n "$USER" -p "$HIVE_PASS" \
-            --silent=true --outputformat=csv2 -e "$1" 2>/dev/null || true
+        timeout "${BEELINE_TIMEOUT}" beeline \
+            -u "$HIVE_SERVER" -n "$USER" -p "$HIVE_PASS" \
+            --silent=true --outputformat=csv2 \
+            -e "$1" 2>/dev/null || true
     }
 
-    # Check database exists
-    DB_CHECK=$(run_beeline "SHOW DATABASES" | count_grep "$HIVE_DB")
+    # Single call: SHOW DATABASES (metadata only — instant)
+    DB_LIST=$(run_beeline "SHOW DATABASES")
+    DB_CHECK=$(echo "$DB_LIST" | count_grep "$HIVE_DB")
     if [[ "$DB_CHECK" -gt 0 ]] 2>/dev/null; then
         ok "Hive database $HIVE_DB exists"
     else
         fail "Hive database $HIVE_DB not found"
     fi
 
-    # Check partitioned+bucketed table exists
-    TABLE_CHECK=$(run_beeline "USE $HIVE_DB; SHOW TABLES" | count_grep "$HIVE_TABLE")
+    # Single call: SHOW TABLES (metadata only — instant)
+    TABLE_LIST=$(run_beeline "USE $HIVE_DB; SHOW TABLES")
+
+    TABLE_CHECK=$(echo "$TABLE_LIST" | count_grep "$HIVE_TABLE")
     if [[ "$TABLE_CHECK" -gt 0 ]] 2>/dev/null; then
         ok "Hive table $HIVE_DB.$HIVE_TABLE exists"
     else
         fail "Hive table $HIVE_DB.$HIVE_TABLE not found"
     fi
 
-    # Check table has data
-    ROW_CHECK=$(run_beeline "SELECT COUNT(*) AS cnt FROM $HIVE_DB.$HIVE_TABLE" \
-        | tail -1 | tr -d '[:space:]')
-    if [[ "$ROW_CHECK" -gt 0 ]] 2>/dev/null; then
-        ok "Hive table $HIVE_DB.$HIVE_TABLE has $ROW_CHECK rows"
+    # Check table has data via LIMIT 1 (reads one row, not full scan)
+    HAS_DATA=$(run_beeline \
+        "SELECT 1 FROM $HIVE_DB.$HIVE_TABLE LIMIT 1" \
+        | count_grep "1")
+    if [[ "$HAS_DATA" -gt 0 ]] 2>/dev/null; then
+        ok "Hive table $HIVE_DB.$HIVE_TABLE has data"
     else
         warn "Hive table $HIVE_DB.$HIVE_TABLE appears empty"
     fi
 
-    # Check unpartitioned table was deleted
-    ORIG_TABLE=$(run_beeline "USE $HIVE_DB; SHOW TABLES" \
+    # Check unpartitioned table was deleted (reuse TABLE_LIST)
+    ORIG_TABLE=$(echo "$TABLE_LIST" \
         | grep -v "part_buck" | count_grep "yellow_taxi_trips")
     if [[ "$ORIG_TABLE" -eq 0 ]] 2>/dev/null; then
         ok "Unpartitioned table yellow_taxi_trips was deleted"
@@ -207,18 +214,17 @@ if command -v beeline &>/dev/null; then
         fail "Unpartitioned table yellow_taxi_trips still exists (should be deleted)"
     fi
 
-    # Check partitions
-    PARTITION_COUNT=$(run_beeline "SHOW PARTITIONS $HIVE_DB.$HIVE_TABLE" \
-        | count_grep "year=")
+    # Check partitions (metadata only — instant)
+    PARTITION_COUNT=$(run_beeline \
+        "SHOW PARTITIONS $HIVE_DB.$HIVE_TABLE" | count_grep "=")
     if [[ "$PARTITION_COUNT" -gt 0 ]] 2>/dev/null; then
         ok "Table $HIVE_TABLE has $PARTITION_COUNT partition(s)"
     else
         warn "No partitions found for $HIVE_TABLE"
     fi
 
-    # Check qX_results tables exist (at least 6)
-    Q_TABLES=$(run_beeline "USE $HIVE_DB; SHOW TABLES" \
-        | count_grep "q[0-9]*_results")
+    # Check qX_results tables exist (reuse TABLE_LIST)
+    Q_TABLES=$(echo "$TABLE_LIST" | count_grep "q[0-9]*_results")
     if [[ "$Q_TABLES" -ge 6 ]] 2>/dev/null; then
         ok "$Q_TABLES EDA result tables found (>=6)"
     else

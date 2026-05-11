@@ -29,6 +29,27 @@ STAGE2_TO_TLC_COLUMNS = (
 
 CATEGORICAL_FEATURES = ("VendorID", "RatecodeID", "PULocationID", "DOLocationID")
 
+CANDIDATE_FEATURE_COLUMNS = (
+    "VendorID",
+    "passenger_count",
+    "trip_distance",
+    "RatecodeID",
+    "PULocationID",
+    "DOLocationID",
+    "fare_amount",
+    "pickup_month_sin",
+    "pickup_month_cos",
+    "pickup_hour_sin",
+    "pickup_hour_cos",
+    "pickup_dow_sin",
+    "pickup_dow_cos",
+    "is_weekend",
+    "rush_hour",
+    "night_trip",
+    "airport_rate",
+    "pre_tip_amount",
+)
+
 
 # URI / path helpers
 def _remote_data_uri(path: str) -> bool:
