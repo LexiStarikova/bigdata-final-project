@@ -23,7 +23,7 @@ def result():
     return ValidationResult()
 
 
-# ── Stage I: PostgreSQL schema (create_tables.sql) ──────────────────────
+# Stage I: PostgreSQL schema (create_tables.sql)
 
 class TestCreateTablesSql:
     @pytest.fixture
@@ -97,7 +97,7 @@ class TestBulkLoad:
         assert result.success
 
 
-# ── Stage II: Hive (db.hql) ──────────────────────────────────────────────
+# Stage II: Hive (db.hql)
 
 class TestDbHql:
     @pytest.fixture
@@ -172,7 +172,7 @@ class TestDbHql:
         assert "project/hive/warehouse" != "project/warehouse"
 
 
-# ── Stage II: EDA (eda.hql) ──────────────────────────────────────────────
+# Stage II: EDA (eda.hql)
 
 class TestEdaHql:
     @pytest.fixture
@@ -231,7 +231,7 @@ class TestEdaHql:
         assert content.upper().count("SELECT * FROM") >= 6
 
 
-# ── Stage IV: Hive ML tables (stage4_ml_tables.hql) ─────────────────────
+# Stage IV: Hive ML tables (stage4_ml_tables.hql)
 
 class TestStage4MlTablesHql:
     @pytest.fixture

@@ -6,10 +6,7 @@ tested via mocking where feasible.
 
 import csv
 import json
-import math
 import os
-import textwrap
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -18,7 +15,7 @@ import stage3 as s3
 import stage3_helpers as s3h
 
 
-# ── _remote_data_uri ─────────────────────────────────────────────────────
+# _remote_data_uri
 
 class TestRemoteDataUri:
     def test_hdfs_triple_slash(self):
@@ -58,7 +55,7 @@ class TestRemoteDataUri:
         assert s3h._remote_data_uri("HDFS:///data") is True
 
 
-# ── _normalize_hdfs_uri_for_spark ────────────────────────────────────────
+# _normalize_hdfs_uri_for_spark
 
 class TestNormalizeHdfsUri:
     def test_triple_slash_unchanged(self):
@@ -77,7 +74,7 @@ class TestNormalizeHdfsUri:
         assert s3h._normalize_hdfs_uri_for_spark("hdfs://nn:8020/data") == "hdfs://nn:8020/data"
 
 
-# ── resolve_filesystem_data_dir ──────────────────────────────────────────
+# resolve_filesystem_data_dir
 
 class TestResolveFilesystemDataDir:
     def test_remote_uri_untouched(self):
@@ -93,7 +90,7 @@ class TestResolveFilesystemDataDir:
         assert not result.endswith("/")
 
 
-# ── hive_table_qualifier ─────────────────────────────────────────────────
+# hive_table_qualifier
 
 class TestHiveTableQualifier:
     def test_none_when_no_table(self):
@@ -123,7 +120,7 @@ class TestHiveTableQualifier:
         assert s3h.hive_table_qualifier("", "simple_table") == "simple_table"
 
 
-# ── scaler_use_mean ──────────────────────────────────────────────────────
+# scaler_use_mean
 
 class TestScalerUseMean:
     def test_cli_flag_true(self):
@@ -151,7 +148,7 @@ class TestScalerUseMean:
             assert s3h.scaler_use_mean(False) is False
 
 
-# ── _use_hdfs_for_writes ─────────────────────────────────────────────────
+# _use_hdfs_for_writes
 
 class TestUseHdfsForWrites:
     def test_local_only_env_disables(self):
@@ -179,7 +176,7 @@ class TestUseHdfsForWrites:
                 assert s3h._use_hdfs_for_writes() is False
 
 
-# ── _local_file_uri ──────────────────────────────────────────────────────
+# _local_file_uri
 
 class TestLocalFileUri:
     def test_produces_file_uri(self):
@@ -191,7 +188,7 @@ class TestLocalFileUri:
         assert "/tmp/some/path" in result
 
 
-# ── _hdfs_scratch_base ───────────────────────────────────────────────────
+# _hdfs_scratch_base
 
 class TestHdfsScratchBase:
     def test_default_uses_user(self):
@@ -210,7 +207,7 @@ class TestHdfsScratchBase:
             assert not s3h._hdfs_scratch_base().endswith("/")
 
 
-# ── discover_parquet ─────────────────────────────────────────────────────
+# discover_parquet
 
 class TestDiscoverParquet:
     def test_finds_shallow_parquets(self, tmp_path):
@@ -247,7 +244,7 @@ class TestDiscoverParquet:
         assert len(found) == 1
 
 
-# ── compute_prediction_csv_metrics ───────────────────────────────────────
+# compute_prediction_csv_metrics
 
 class TestComputePredictionCsvMetrics:
     def _write_prediction_csv(self, path, rows):
@@ -331,7 +328,7 @@ class TestComputePredictionCsvMetrics:
         assert metrics["r2"] == pytest.approx(0.0)
 
 
-# ── write_json_local ─────────────────────────────────────────────────────
+# write_json_local
 
 class TestWriteJsonLocal:
     def test_creates_file(self, tmp_path):
@@ -360,7 +357,7 @@ class TestWriteJsonLocal:
         assert "\n" in content
 
 
-# ── summarize_params ─────────────────────────────────────────────────────
+# summarize_params
 
 class TestSummarizeParams:
     def test_basic_extraction(self):
@@ -384,7 +381,7 @@ class TestSummarizeParams:
         assert isinstance(result["regParam"], float)
 
 
-# ── load_saved_best_params ───────────────────────────────────────────────
+# load_saved_best_params
 
 class TestLoadSavedBestParams:
     def test_returns_none_when_missing(self, tmp_path):
@@ -402,7 +399,7 @@ class TestLoadSavedBestParams:
         assert result == {"regParam": 0.01, "maxIter": 100}
 
 
-# ── STAGE2_TO_TLC_COLUMNS constant ──────────────────────────────────────
+# STAGE2_TO_TLC_COLUMNS constant
 
 class TestStage2Constants:
     def test_stage2_column_mapping_count(self):
@@ -423,7 +420,7 @@ class TestStage2Constants:
             assert isinstance(feat, str)
 
 
-# ── parse_args ───────────────────────────────────────────────────────────
+# parse_args
 
 class TestParseArgs:
     def test_defaults(self):

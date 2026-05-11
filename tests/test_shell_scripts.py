@@ -4,7 +4,6 @@ These tests verify that all shell scripts exist, have correct structure,
 contain expected commands, and pass bash syntax checks.
 """
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -14,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 
-# ── Script existence ──────────────────────────────────────────────────────
+# Script existence
 
 class TestScriptExistence:
     @pytest.mark.parametrize("script", [
@@ -32,7 +31,7 @@ class TestScriptExistence:
         assert (REPO_ROOT / "main.sh").is_file()
 
 
-# ── Bash syntax check ────────────────────────────────────────────────────
+# Bash syntax check
 
 class TestBashSyntax:
     @pytest.mark.parametrize("script", [
@@ -56,7 +55,7 @@ class TestBashSyntax:
         )
 
 
-# ── Shebang lines ────────────────────────────────────────────────────────
+# Shebang lines
 
 class TestShebangLines:
     @pytest.mark.parametrize("script", [
@@ -85,7 +84,7 @@ class TestShebangLines:
         assert first_line.startswith("#!/")
 
 
-# ── main.sh ──────────────────────────────────────────────────────────────
+# main.sh
 
 class TestMainSh:
     @pytest.fixture
@@ -129,7 +128,7 @@ class TestMainSh:
         assert positions["stage4"] < positions["postprocess"]
 
 
-# ── preprocess.sh ────────────────────────────────────────────────────────
+# preprocess.sh
 
 class TestPreprocessSh:
     @pytest.fixture
@@ -159,7 +158,7 @@ class TestPreprocessSh:
             assert m in content
 
 
-# ── stage1.sh ────────────────────────────────────────────────────────────
+# stage1.sh
 
 class TestStage1Sh:
     @pytest.fixture
@@ -194,7 +193,7 @@ class TestStage1Sh:
         assert "mkdir -p output" in content
 
 
-# ── stage2.sh ────────────────────────────────────────────────────────────
+# stage2.sh
 
 class TestStage2Sh:
     @pytest.fixture
@@ -230,7 +229,7 @@ class TestStage2Sh:
         assert "avsc" in content.lower() or "schema" in content.lower()
 
 
-# ── stage3.sh ────────────────────────────────────────────────────────────
+# stage3.sh
 
 class TestStage3Sh:
     @pytest.fixture
@@ -271,7 +270,7 @@ class TestStage3Sh:
         assert "STAGE3_FORCE_LOCAL" in content
 
 
-# ── stage4.sh ────────────────────────────────────────────────────────────
+# stage4.sh
 
 class TestStage4Sh:
     @pytest.fixture
@@ -306,7 +305,7 @@ class TestStage4Sh:
         assert "feature_signals" in content or "model_feature_signals" in content
 
 
-# ── postprocess.sh ───────────────────────────────────────────────────────
+# postprocess.sh
 
 class TestPostprocessSh:
     def test_has_shebang(self):
@@ -315,7 +314,7 @@ class TestPostprocessSh:
         assert first_line.startswith("#!/")
 
 
-# ── SQL files existence ──────────────────────────────────────────────────
+# SQL files existence
 
 class TestSqlFiles:
     @pytest.mark.parametrize("sql_file", [
@@ -342,7 +341,7 @@ class TestSqlFiles:
         assert "COUNT" in content.upper()
 
 
-# ── requirements.txt ─────────────────────────────────────────────────────
+# requirements.txt
 
 class TestRequirements:
     @pytest.fixture

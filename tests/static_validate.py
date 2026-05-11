@@ -15,9 +15,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-# ---------------------------------------------------------------------------
 # Result accumulator
-# ---------------------------------------------------------------------------
 
 class ValidationResult:
     """Accumulates pass / warning / error results."""
@@ -57,9 +55,7 @@ class ValidationResult:
         return lines
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 def _repo_root_from_argv() -> Path:
     if len(sys.argv) > 1:
@@ -95,9 +91,7 @@ def _file_size_mb(path: Path) -> float:
         return 0.0
 
 
-# ---------------------------------------------------------------------------
 # 1. Repository structure
-# ---------------------------------------------------------------------------
 
 def check_stage_scripts_exist(root: Path, result: ValidationResult):
     """Required stage scripts must exist (under scripts/ or root)."""
@@ -187,9 +181,7 @@ def check_readme(root: Path, result: ValidationResult):
         result.warn("README.md not found")
 
 
-# ---------------------------------------------------------------------------
 # 2. Security: hardcoded secrets
-# ---------------------------------------------------------------------------
 
 _SECRET_PATTERN = re.compile(
     r"""(?:password|passwd|token|secret|api_key)\s*=\s*["']([^"']{3,})["']""",
@@ -234,9 +226,7 @@ def check_no_hardcoded_secrets(root: Path, result: ValidationResult):
         result.ok("No hardcoded secrets detected")
 
 
-# ---------------------------------------------------------------------------
 # 3. Shell scripts
-# ---------------------------------------------------------------------------
 
 def find_shell_scripts(root: Path) -> List[Path]:
     return _find_files(root, (".sh",))
@@ -343,9 +333,7 @@ def check_no_hardcoded_user_paths(root: Path, result: ValidationResult):
                 result.warn(f"{sh.relative_to(root)}:{lineno}: possible hardcoded user path")
 
 
-# ---------------------------------------------------------------------------
 # 4. SQL checks
-# ---------------------------------------------------------------------------
 
 def find_sql_files(root: Path) -> List[Path]:
     return _find_files(root, (".sql",))
@@ -406,9 +394,7 @@ def check_sql_bulk_load(root: Path, result: ValidationResult):
         result.error("SQL/Python: no COPY bulk load command found")
 
 
-# ---------------------------------------------------------------------------
 # 5. HQL / Hive checks
-# ---------------------------------------------------------------------------
 
 def find_hql_files(root: Path) -> List[Path]:
     return _find_files(root, (".hql",))
@@ -502,9 +488,7 @@ def check_hql_analytical_patterns(root: Path, result: ValidationResult):
             result.warn(f"HQL EDA: {desc} not found")
 
 
-# ---------------------------------------------------------------------------
 # 6. PySpark / ML checks
-# ---------------------------------------------------------------------------
 
 def _gather_pyspark_sources(root: Path) -> str:
     """Concatenate all Python source under scripts/ for ML checks."""
@@ -716,9 +700,7 @@ def check_prediction_output(root: Path, result: ValidationResult):
             result.warn(f"PySpark: {model_key} reference not found")
 
 
-# ---------------------------------------------------------------------------
 # 7. Python compile check
-# ---------------------------------------------------------------------------
 
 def check_python_compile(root: Path, result: ValidationResult):
     """All .py files must compile."""
@@ -737,9 +719,7 @@ def check_python_compile(root: Path, result: ValidationResult):
         result.ok(f"All {len(py_files)} Python files compile")
 
 
-# ---------------------------------------------------------------------------
 # Run all checks
-# ---------------------------------------------------------------------------
 
 ALL_CHECKS = [
     check_stage_scripts_exist,

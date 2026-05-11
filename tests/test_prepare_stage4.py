@@ -11,7 +11,7 @@ import pytest
 import prepare_stage4_ml_artifacts as s4
 
 
-# ── stringify ─────────────────────────────────────────────────────────────
+# stringify
 
 class TestStringify:
     def test_bool_true(self):
@@ -39,7 +39,7 @@ class TestStringify:
         assert s4.stringify("") == ""
 
 
-# ── bucket_error ──────────────────────────────────────────────────────────
+# bucket_error
 
 class TestBucketError:
     def test_within_1(self):
@@ -70,7 +70,7 @@ class TestBucketError:
         assert s4.bucket_error(100.0) == "D_>5"
 
 
-# ── MODELS constant ──────────────────────────────────────────────────────
+# MODELS constant
 
 class TestModelsConstant:
     def test_three_models(self):
@@ -87,7 +87,7 @@ class TestModelsConstant:
         assert "GBTRegressor" in names
 
 
-# ── FEATURE_DESCRIPTIONS constant ────────────────────────────────────────
+# FEATURE_DESCRIPTIONS constant
 
 class TestFeatureDescriptions:
     def test_non_empty(self):
@@ -109,7 +109,7 @@ class TestFeatureDescriptions:
             assert len(desc) > 0
 
 
-# ── repo_root ─────────────────────────────────────────────────────────────
+# repo_root
 
 class TestRepoRoot:
     def test_returns_path(self):
@@ -121,7 +121,7 @@ class TestRepoRoot:
         assert (root / "scripts").is_dir()
 
 
-# ── read_json ─────────────────────────────────────────────────────────────
+# read_json
 
 class TestReadJson:
     def test_reads_valid_json(self, tmp_path):
@@ -138,7 +138,7 @@ class TestReadJson:
         assert result == payload
 
 
-# ── write_csv ─────────────────────────────────────────────────────────────
+# write_csv
 
 class TestWriteCsv:
     def test_creates_file(self, tmp_path):
@@ -171,7 +171,7 @@ class TestWriteCsv:
         assert text == "a,b"
 
 
-# ── sample_prediction_rows ───────────────────────────────────────────────
+# sample_prediction_rows
 
 class TestSamplePredictionRows:
     def _write_pred_csv(self, path, n_rows):
@@ -231,7 +231,7 @@ class TestSamplePredictionRows:
             assert "prediction" in row
 
 
-# ── validate_required_outputs ────────────────────────────────────────────
+# validate_required_outputs
 
 class TestValidateRequiredOutputs:
     def _create_all_outputs(self, output_dir):
@@ -280,7 +280,7 @@ class TestValidateRequiredOutputs:
             s4.validate_required_outputs(output_dir)
 
 
-# ── build_best_params ────────────────────────────────────────────────────
+# build_best_params
 
 class TestBuildBestParams:
     def _setup_params(self, output_dir):
@@ -324,7 +324,7 @@ class TestBuildBestParams:
             assert set(reader.fieldnames) == {"model", "param_name", "param_value"}
 
 
-# ── build_training_summary ───────────────────────────────────────────────
+# build_training_summary
 
 class TestBuildTrainingSummary:
     def test_creates_csv(self, tmp_path):
@@ -370,7 +370,7 @@ class TestBuildTrainingSummary:
         assert len(rows) == 8
 
 
-# ── build_feature_catalog ────────────────────────────────────────────────
+# build_feature_catalog
 
 class TestBuildFeatureCatalog:
     def test_creates_csv(self, tmp_path):
@@ -390,7 +390,7 @@ class TestBuildFeatureCatalog:
             assert set(reader.fieldnames) == {"feature_group", "feature_name", "description"}
 
 
-# ── build_prediction_samples ─────────────────────────────────────────────
+# build_prediction_samples
 
 class TestBuildPredictionSamples:
     def _setup_predictions(self, output_dir, n_rows=20):
@@ -437,7 +437,7 @@ class TestBuildPredictionSamples:
             assert row["error_bucket"] in ("A_<=1", "B_1_to_2", "C_2_to_5", "D_>5")
 
 
-# ── build_sample_prediction ──────────────────────────────────────────────
+# build_sample_prediction
 
 class TestBuildSamplePrediction:
     def test_skips_when_no_file(self, tmp_path):

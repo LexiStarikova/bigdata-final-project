@@ -48,7 +48,7 @@ def stage3_helpers():
     return _read_text(REPO_ROOT / "scripts" / "stage3_helpers.py")
 
 
-# ── PySpark ML library usage ────────────────────────────────────────────
+# PySpark ML library usage
 
 class TestPySparkImports:
     def test_pyspark_ml_used(self, result):
@@ -69,7 +69,7 @@ class TestNoLocalMaster:
         assert result.success, f"Local master errors: {result.errors}"
 
 
-# ── Hive integration ────────────────────────────────────────────────────
+# Hive integration
 
 class TestHiveIntegration:
     """Rubric: read Hive tables as dataframes."""
@@ -89,7 +89,7 @@ class TestHiveIntegration:
         assert "spark.table(" in pyspark_sources or "load_hive_table" in pyspark_sources
 
 
-# ── Feature pipeline ────────────────────────────────────────────────────
+# Feature pipeline
 
 class TestFeaturePipeline:
     """Rubric: build and fit a feature extraction pipeline."""
@@ -117,7 +117,7 @@ class TestFeaturePipeline:
         assert "StandardScaler" in pyspark_sources
 
 
-# ── Train/test split ────────────────────────────────────────────────────
+# Train/test split
 
 class TestTrainTestSplit:
     """Rubric: split into train and test, save as JSON to HDFS."""
@@ -142,7 +142,7 @@ class TestTrainTestSplit:
         assert ".json(" in stage3_helpers
 
 
-# ── Three model types ───────────────────────────────────────────────────
+# Three model types
 
 class TestModelTypes:
     """Rubric: select at least 2 (project uses 3) model types from pyspark.ml."""
@@ -166,7 +166,7 @@ class TestModelTypes:
         assert pipeline_count >= 3, f"Only {pipeline_count} Pipeline definitions, need >=3"
 
 
-# ── Hyperparameter tuning (per model) ────────────────────────────────────
+# Hyperparameter tuning (per model)
 
 class TestHyperparameterTuning:
     """Rubric: at least 2 hyperparameters per model, grid search + CV."""
@@ -223,7 +223,7 @@ class TestHyperparameterTuning:
         assert "bestModel" in stage3_helpers or "best_index" in stage3_helpers
 
 
-# ── Model saving ────────────────────────────────────────────────────────
+# Model saving
 
 class TestModelSaving:
     """Rubric: save models to HDFS, save predictions, save evaluation."""
@@ -248,7 +248,7 @@ class TestModelSaving:
         assert "models_root" in stage3_py or "models_dir" in stage3_py
 
 
-# ── Prediction saving ────────────────────────────────────────────────────
+# Prediction saving
 
 class TestPredictionSaving:
     """Rubric: save predictions as CSV, label+prediction columns, one partition."""
@@ -274,7 +274,7 @@ class TestPredictionSaving:
         assert "prediction" in pyspark_sources
 
 
-# ── Evaluation ──────────────────────────────────────────────────────────
+# Evaluation
 
 class TestEvaluation:
     """Rubric: evaluate models, compare on test data, evaluation dataframe."""
@@ -306,7 +306,7 @@ class TestEvaluation:
         assert "_metrics_row" in stage3_py or "metrics" in stage3_py
 
 
-# ── Python compile ──────────────────────────────────────────────────────
+# Python compile
 
 class TestPythonCompile:
     def test_python_compile(self, result):

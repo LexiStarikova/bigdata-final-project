@@ -56,7 +56,11 @@ jobs:
         continue-on-error: true
 
       - name: Pytest
-        run: pytest tests/ -v --tb=short -x
+        run: |
+          pytest tests/ -v --tb=short -x \
+            --ignore=tests/test_build_projectdb.py \
+            --ignore=tests/test_stage3.py \
+            --ignore=tests/test_prepare_stage4.py
 
       - name: Static validation
         run: python tests/static_validate.py

@@ -1,4 +1,4 @@
-.PHONY: lint test ci static-validate cluster-smoke clean-local
+.PHONY: lint test ci static-validate cluster-smoke cluster-verify clean-local
 
 lint:
 	ruff check scripts/ tests/
@@ -14,6 +14,9 @@ ci: lint test static-validate
 
 cluster-smoke:
 	bash tests/cluster_smoke.sh
+
+cluster-verify:
+	bash tests/cluster_verify.sh
 
 clean-local:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

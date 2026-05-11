@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
 
 
-# ── Stage 1 rubric-specific ──────────────────────────────────────────────
+# Stage 1 rubric-specific
 
 class TestStage1Rubric:
     """Rubric: schema, constraints, COPY load, Sqoop AVRO+Snappy, .avsc/.java."""
@@ -71,7 +71,7 @@ class TestStage1Rubric:
         assert "project/warehouse" in s1
 
 
-# ── Stage 2 rubric-specific ──────────────────────────────────────────────
+# Stage 2 rubric-specific
 
 class TestStage2Rubric:
     """Rubric: Hive DB, external tables, partitioning, bucketing, EDA, CSV export."""
@@ -117,7 +117,7 @@ class TestStage2Rubric:
             "Hive DB should use project/hive/warehouse (separate from Sqoop's project/warehouse)"
 
 
-# ── Stage 3 rubric-specific ──────────────────────────────────────────────
+# Stage 3 rubric-specific
 
 class TestStage3ShRubric:
     """Rubric: spark-submit on YARN, Hive table, models dir, output dir."""
@@ -153,7 +153,7 @@ class TestStage3ShRubric:
         assert "--deploy-mode" in s3
 
 
-# ── Cross-stage checks ──────────────────────────────────────────────────
+# Cross-stage checks
 
 class TestCrossStageChecks:
     def test_no_hardcoded_local_master(self):
