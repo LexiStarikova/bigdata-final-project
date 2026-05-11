@@ -1,10 +1,6 @@
 USE team35_projectdb;
 SET hive.resultset.use.unique.column.names=false;
 
--- Pickup/dropoff in yellow_taxi_trips_part_buck are BIGINT epoch milliseconds (Avro long).
--- Human time: FROM_UNIXTIME(CAST(ms / 1000 AS BIGINT)).
--- Hour / weekday: substring on that string (avoid HOUR() on TIMESTAMP + bad Avro cast).
-
 -- Q1: Dataset overview 
 
 DROP TABLE IF EXISTS q1_results;
@@ -31,7 +27,7 @@ SELECT
     ROUND(AVG(trip_distance),   2)                     AS avg_distance,
     ROUND(AVG(tip_amount),      2)                     AS avg_tip
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
   AND tpep_pickup_datetime IS NOT NULL;
 
 SELECT * FROM q1_results;
@@ -64,7 +60,7 @@ SELECT
     COUNT(CASE WHEN trip_distance > 50           THEN 1 END)  AS outlier_dist_gt50mi,
     COUNT(CASE WHEN fare_amount > 500            THEN 1 END)  AS outlier_fare_gt500
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025;
+WHERE month BETWEEN 1 AND 12;
 
 SELECT * FROM q2_results;
 
@@ -90,7 +86,7 @@ SELECT
     ROUND(AVG(fare_amount), 2)      AS avg_fare,
     ROUND(AVG(tip_amount),  2)      AS avg_tip
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
 GROUP BY CAST(passenger_count AS INT)
 ORDER BY trip_count DESC;
 
@@ -126,7 +122,7 @@ SELECT
     ROUND(AVG(trip_distance), 2)    AS avg_distance,
     ROUND(AVG(fare_amount),   2)    AS avg_fare
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
 GROUP BY
     CASE
         WHEN trip_distance = 0      THEN '0_zero_bad_data'
@@ -172,7 +168,7 @@ SELECT
     ROUND(SUM(extra),                 2)  AS total_extra,
     ROUND(SUM(total_amount),          2)  AS grand_total
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025;
+WHERE month BETWEEN 1 AND 12;
 
 SELECT * FROM q5_results;
 
@@ -199,7 +195,7 @@ SELECT
     ROUND(AVG(fare_amount),  2)     AS avg_fare,
     ROUND(AVG(tip_amount),   2)     AS avg_tip
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
 GROUP BY CAST(payment_type AS INT)
 ORDER BY trip_count DESC;
 
@@ -232,7 +228,7 @@ SELECT
     ROUND(AVG(tip_amount),   2)                                AS avg_tip,
     ROUND(SUM(total_amount), 2)                                AS total_revenue
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
   AND tpep_pickup_datetime IS NOT NULL
 GROUP BY CAST(SUBSTRING(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT)), 12, 2) AS INT)
 ORDER BY hour_of_day;
@@ -274,7 +270,7 @@ SELECT
     ROUND(AVG(total_amount),  2)     AS avg_total,
     ROUND(AVG(tip_amount),    2)     AS avg_tip
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
 GROUP BY CAST(ratecodeid AS INT)
 ORDER BY avg_total DESC;
 
@@ -311,7 +307,7 @@ SELECT
     ROUND(AVG(fare_amount),                      2)   AS avg_fare,
     ROUND(AVG(fare_amount / NULLIF(trip_distance, 0)), 2) AS revenue_per_mile
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
   AND trip_distance > 0
 GROUP BY
     CASE
@@ -327,8 +323,7 @@ SELECT * FROM q9_results;
 
 
 
--- Q10: Day-of-week — avoid date_format(...,'u'): pattern 'u' breaks on many Hive/Java builds.
---      We derive weekday from yyyy-MM-dd (first 10 chars of string TS) vs a fixed Sunday anchor.
+-- Q10: Day-of-week
 
 
 DROP TABLE IF EXISTS q10_results;
@@ -364,7 +359,7 @@ SELECT
     ROUND(AVG(total_amount), 2)      AS avg_revenue,
     ROUND(AVG(tip_amount),   2)      AS avg_tip
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
   AND tpep_pickup_datetime IS NOT NULL
 GROUP BY pmod(
     CAST(datediff(
@@ -398,59 +393,9 @@ SELECT
     ROUND(AVG(fare_amount), 2)  AS avg_fare,
     ROUND(AVG(tip_amount),  2)  AS avg_tip
 FROM yellow_taxi_trips_part_buck
-WHERE year = 2025
+WHERE month BETWEEN 1 AND 12
 GROUP BY pulocationid
 ORDER BY pickup_count DESC
 LIMIT 10;
 
 SELECT * FROM q11_results;
-
-
-
--- Q12: Late-night tipping — do night passengers tip more?
-
-DROP TABLE IF EXISTS q12_results;
-CREATE EXTERNAL TABLE q12_results (
-    time_of_day   STRING,
-    trip_count    BIGINT,
-    avg_fare      DOUBLE,
-    avg_tip       DOUBLE,
-    tip_pct       DOUBLE
-)
-ROW FORMAT DELIMITED
-FIELDS TERMINATED BY ','
-LOCATION 'project/hive/warehouse/q12_results';
-
-INSERT INTO q12_results
-SELECT
-    CASE
-        WHEN pickup_hour BETWEEN  6 AND 11 THEN 'A_Morning_06to11'
-        WHEN pickup_hour BETWEEN 12 AND 17 THEN 'B_Afternoon_12to17'
-        WHEN pickup_hour BETWEEN 18 AND 22 THEN 'C_Evening_18to22'
-        ELSE                                 'D_Night_23to05'
-    END                                                        AS time_of_day,
-    COUNT(*)                                                   AS trip_count,
-    ROUND(AVG(fare_amount),                                2)  AS avg_fare,
-    ROUND(AVG(tip_amount),                                2)    AS avg_tip,
-    ROUND(AVG(tip_amount / NULLIF(fare_amount, 0)) * 100, 2) AS tip_pct
-FROM (
-    SELECT
-        CAST(SUBSTRING(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT)), 12, 2) AS INT) AS pickup_hour,
-        fare_amount,
-        tip_amount
-    FROM yellow_taxi_trips_part_buck
-    WHERE year = 2025
-      AND tpep_pickup_datetime IS NOT NULL
-      AND fare_amount > 0
-      AND CAST(payment_type AS INT) = 1
-) h
-GROUP BY
-    CASE
-        WHEN pickup_hour BETWEEN  6 AND 11 THEN 'A_Morning_06to11'
-        WHEN pickup_hour BETWEEN 12 AND 17 THEN 'B_Afternoon_12to17'
-        WHEN pickup_hour BETWEEN 18 AND 22 THEN 'C_Evening_18to22'
-        ELSE                                 'D_Night_23to05'
-    END
-ORDER BY tip_pct DESC;
-
-SELECT * FROM q12_results;
