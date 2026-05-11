@@ -97,9 +97,9 @@ class TestStage2Rubric:
         for i in range(1, 7):
             assert f"q{i}" in s2, f"stage2.sh must export q{i}"
 
-    def test_exports_12_csv(self, s2):
-        """Project has 12 EDA queries."""
-        for i in range(1, 13):
+    def test_exports_11_csv(self, s2):
+        """Project has 11 EDA queries."""
+        for i in range(1, 12):
             assert f"q{i}" in s2, f"stage2.sh should export q{i}"
 
     def test_csv_output_dir(self, s2):

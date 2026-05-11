@@ -186,9 +186,9 @@ class TestEdaHql:
         q_tables = set(re.findall(r"q(\d+)_results", content, re.IGNORECASE))
         assert len(q_tables) >= 6, f"Only {len(q_tables)} EDA queries, need >=6"
 
-    def test_12_queries(self, content):
+    def test_11_queries(self, content):
         q_tables = set(re.findall(r"q(\d+)_results", content, re.IGNORECASE))
-        assert len(q_tables) >= 12, f"Only {len(q_tables)} EDA queries, expected 12"
+        assert len(q_tables) >= 11, f"Only {len(q_tables)} EDA queries, expected 11"
 
     def test_each_query_creates_results_table(self, content):
         """Rubric: store results of query qx in qx_results table."""

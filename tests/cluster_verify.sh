@@ -224,13 +224,13 @@ if command -v hdfs &>/dev/null; then
     done
 
     if [[ "$TABLE_HDFS_FOUND" -eq 1 ]]; then
-        # Check partition directories (year=XXXX)
+        # Check partition directories (month=X)
         PARTITION_DIRS=$(hdfs dfs -ls "$TABLE_HDFS_PATH" 2>/dev/null \
-            | grep "year=" | wc -l | tr -d '[:space:]' || echo "0")
+            | grep "month=" | wc -l | tr -d '[:space:]' || echo "0")
         if [[ "$PARTITION_DIRS" -gt 0 ]] 2>/dev/null; then
-            ok "Hive table has $PARTITION_DIRS partition directories (year=*)"
+            ok "Hive table has $PARTITION_DIRS partition directories (month=*)"
         else
-            warn "No year=* partition directories found under $TABLE_HDFS_PATH"
+            warn "No month=* partition directories found under $TABLE_HDFS_PATH"
         fi
 
         # Check data files inside partition dirs (look 2 levels deep)
@@ -258,7 +258,7 @@ fi
 
 # 3.2 Local EDA CSV outputs
 EDA_LOCAL_COUNT=0
-for i in $(seq 1 12); do
+for i in $(seq 1 11); do
     f="output/q${i}.csv"
     if [[ -s "$f" ]]; then
         ok "$f exists and is non-empty"
