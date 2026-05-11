@@ -48,7 +48,7 @@ jobs:
 
       - name: Pylint (non-blocking score)
         run: |
-          pylint scripts/ tests/ \
+          pylint scripts/ \
             --disable=C,R \
             --fail-under=0 \
             --ignore-patterns='conftest.py' \

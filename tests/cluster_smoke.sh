@@ -12,9 +12,9 @@ pass_count=0
 warn_count=0
 fail_count=0
 
-ok()   { echo -e "${GREEN}[PASS]${NC} $1"; ((pass_count++)); }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; ((warn_count++)); }
-fail() { echo -e "${RED}[FAIL]${NC} $1"; ((fail_count++)); }
+ok()   { echo -e "${GREEN}[PASS]${NC} $1"; pass_count=$((pass_count + 1)); }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; warn_count=$((warn_count + 1)); }
+fail() { echo -e "${RED}[FAIL]${NC} $1"; fail_count=$((fail_count + 1)); }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
