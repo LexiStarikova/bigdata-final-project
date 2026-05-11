@@ -53,8 +53,8 @@ def _normalize_hdfs_uri_for_spark(uri: str) -> str:
 
 def resolve_filesystem_data_dir(arg: str) -> str:
     """Absolute-ify local path; leave remote URIs untouched."""
-    p = arg.rstrip("/")
-    return p if _remote_data_uri(p) else os.path.abspath(p)
+    path_str = arg.rstrip("/")
+    return path_str if _remote_data_uri(path_str) else os.path.abspath(path_str)
 
 
 # Hive helpers
@@ -62,14 +62,14 @@ def hive_table_qualifier(database, table):
     """Build ``database.table`` from separate args or a dot-qualified table."""
     if not table:
         return None
-    db = database
+    db_name = database
     tbl = table
-    if db:
+    if db_name:
         if "." in tbl:
             raise ValueError(
                 "Use (--hive-database + short table) or qualified --hive-table, not both.",
             )
-        return f"{db}.{tbl.strip()}"
+        return f"{db_name}.{tbl.strip()}"
     if "." in tbl:
         parts = tbl.split(".", 1)
         return f"{parts[0].strip()}.{parts[1].strip()}"
@@ -148,10 +148,10 @@ def coerce_epoch_ms_pickup_dropoff(raw_df):
     """sql/db.hql stores pickup/dropoff as BIGINT millis; parquet TLC uses TIMESTAMP."""
 
     def needs_ms_to_ts(typ: str) -> bool:
-        t = typ.lower().split("(")[0].strip()
-        if t == "timestamp":
+        type_name = typ.lower().split("(")[0].strip()
+        if type_name == "timestamp":
             return False
-        return t in ("bigint", "long", "int", "smallint", "short", "double", "float", "decimal")
+        return type_name in ("bigint", "long", "int", "smallint", "short", "double", "float", "decimal")
 
     dtypes = dict(raw_df.dtypes)
     out = raw_df
@@ -287,22 +287,22 @@ def write_json_local(payload, outfile: str):
     parent_dir = os.path.dirname(final_path)
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
-    with open(final_path, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, default=str)
+    with open(final_path, "w", encoding="utf-8") as file_handle:
+        json.dump(payload, file_handle, indent=2, default=str)
 
 
 # Model params helpers
 def summarize_params(model_stage):
     """Extract hyper-parameter map from a fitted Spark ML stage."""
-    m = {}
-    for k, v in model_stage.extractParamMap().items():
-        name = str(k.name)
-        if hasattr(v, "item"):
-            v = v.item()
-        elif isinstance(v, (list, tuple)) and v and hasattr(v[0], "item"):
-            v = type(v)(x.item() if hasattr(x, "item") else x for x in v)
-        m[name] = v
-    return m
+    params_map = {}
+    for param_key, param_val in model_stage.extractParamMap().items():
+        name = str(param_key.name)
+        if hasattr(param_val, "item"):
+            param_val = param_val.item()
+        elif isinstance(param_val, (list, tuple)) and param_val and hasattr(param_val[0], "item"):
+            param_val = type(param_val)(x.item() if hasattr(x, "item") else x for x in param_val)
+        params_map[name] = param_val
+    return params_map
 
 
 def save_best_params(output_root, model_key, model_name, pipeline_model):
@@ -320,22 +320,22 @@ def load_saved_best_params(output_root: str, model_key: str):
     path = os.path.join(output_root, f"{model_key}_best_params.json")
     if not os.path.isfile(path):
         return None
-    with open(path, "r", encoding="utf-8") as fh:
-        payload = json.load(fh)
+    with open(path, "r", encoding="utf-8") as file_handle:
+        payload = json.load(file_handle)
     return payload.get("best_params_from_cv")
 
 
 # Prediction CSV metrics (offline / resume path)
 def _csv_label_stats(path):
     """First pass: count rows and accumulate label sums."""
-    n, label_sum, label_sq_sum = 0, 0.0, 0.0
-    with open(path, "r", encoding="utf-8", newline="") as fh:
-        for row in csv.DictReader(fh):
+    row_count, label_sum, label_sq_sum = 0, 0.0, 0.0
+    with open(path, "r", encoding="utf-8", newline="") as file_handle:
+        for row in csv.DictReader(file_handle):
             label = float(row["label"])
-            n += 1
+            row_count += 1
             label_sum += label
             label_sq_sum += label * label
-    return n, label_sum, label_sq_sum
+    return row_count, label_sum, label_sq_sum
 
 
 def _csv_error_stats(path):
@@ -343,8 +343,8 @@ def _csv_error_stats(path):
     acc = {"err_sum": 0.0, "err_sq_sum": 0.0, "abs_err_sum": 0.0,
            "within_1": 0, "within_2": 0}
     abs_errors = []
-    with open(path, "r", encoding="utf-8", newline="") as fh:
-        for row in csv.DictReader(fh):
+    with open(path, "r", encoding="utf-8", newline="") as file_handle:
+        for row in csv.DictReader(file_handle):
             err = float(row["prediction"]) - float(row["label"])
             abs_err = abs(err)
             acc["err_sum"] += err
@@ -365,23 +365,23 @@ def compute_prediction_csv_metrics(prediction_csv: str):
             f"Cannot resume: missing existing prediction CSV {path!r}",
         )
 
-    n, label_sum, label_sq_sum = _csv_label_stats(path)
-    if n == 0:
+    row_count, label_sum, label_sq_sum = _csv_label_stats(path)
+    if row_count == 0:
         raise RuntimeError(f"Cannot compute metrics from empty prediction CSV {path!r}")
 
-    ss_tot = label_sq_sum - (label_sum * label_sum / n)
+    ss_tot = label_sq_sum - (label_sum * label_sum / row_count)
     acc, abs_errors = _csv_error_stats(path)
 
-    def percentile(q):
-        """Return the *q*-th percentile of the sorted absolute errors."""
-        return float(abs_errors[int(round((len(abs_errors) - 1) * q))])
+    def percentile(quantile):
+        """Return the *quantile*-th percentile of the sorted absolute errors."""
+        return float(abs_errors[int(round((len(abs_errors) - 1) * quantile))])
 
-    mean_error = acc["err_sum"] / n
-    label_variance = ss_tot / n
-    residual_variance = (acc["err_sq_sum"] / n) - (mean_error * mean_error)
+    mean_error = acc["err_sum"] / row_count
+    label_variance = ss_tot / row_count
+    residual_variance = (acc["err_sq_sum"] / row_count) - (mean_error * mean_error)
     return {
-        "rmse": math.sqrt(acc["err_sq_sum"] / n),
-        "mae": acc["abs_err_sum"] / n,
+        "rmse": math.sqrt(acc["err_sq_sum"] / row_count),
+        "mae": acc["abs_err_sum"] / row_count,
         "r2": 0.0 if ss_tot == 0.0 else 1.0 - (acc["err_sq_sum"] / ss_tot),
         "explained_variance": (
             0.0 if label_variance == 0.0 else 1.0 - (residual_variance / label_variance)
@@ -390,8 +390,8 @@ def compute_prediction_csv_metrics(prediction_csv: str):
         "median_abs_error": percentile(0.5),
         "p90_abs_error": percentile(0.9),
         "p95_abs_error": percentile(0.95),
-        "within_1_dollar": acc["within_1"] / n,
-        "within_2_dollars": acc["within_2"] / n,
+        "within_1_dollar": acc["within_1"] / row_count,
+        "within_2_dollars": acc["within_2"] / row_count,
     }
 
 
@@ -444,13 +444,13 @@ def fit_cv_and_pick_best(
     train, cv_train, pipeline, grid, evaluator, **cv_kwargs,
 ):
     """Run CrossValidator on cv_train, refit best params on full train."""
-    cv = CrossValidator(
+    cross_validator = CrossValidator(
         estimator=pipeline,
         estimatorParamMaps=grid,
         evaluator=evaluator,
         **cv_kwargs,
     )
-    cv_model = cv.fit(cv_train)
+    cv_model = cross_validator.fit(cv_train)
     metrics = list(cv_model.avgMetrics)
     if not metrics:
         return cv_model.bestModel

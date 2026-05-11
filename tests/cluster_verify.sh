@@ -22,6 +22,19 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $1"; warn_count=$((warn_count + 1)); }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; fail_count=$((fail_count + 1)); }
 section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
+# Safe grep -c wrapper: trims whitespace and defaults to 0
+count_grep() {
+    local result
+    result=$(grep -c "$@" 2>/dev/null || true)
+    # Take only the last line and strip whitespace
+    result=$(echo "$result" | tail -1 | tr -d '[:space:]')
+    if [[ -z "$result" ]]; then
+        echo "0"
+    else
+        echo "$result"
+    fi
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -60,7 +73,6 @@ done
 section "2. Stage I — Data collection and ingestion"
 # ==========================================================================
 
-# PostgreSQL connection
 if command -v psql &>/dev/null; then
     PGPASSWORD="$(head -1 secrets/.psql.pass 2>/dev/null || echo '')"
     PG_USER="${PGUSER:-$USER}"
@@ -73,7 +85,6 @@ if command -v psql &>/dev/null; then
         fail "Cannot connect to PostgreSQL $PG_DB"
     fi
 
-    # Check table exists
     TABLE_EXISTS=$(PGPASSWORD="$PGPASSWORD" psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -tAc \
         "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='yellow_taxi_trips')" 2>/dev/null || echo "f")
     if [[ "$TABLE_EXISTS" == "t" ]]; then
@@ -82,7 +93,6 @@ if command -v psql &>/dev/null; then
         fail "PostgreSQL table yellow_taxi_trips not found"
     fi
 
-    # Check primary key
     PK_EXISTS=$(PGPASSWORD="$PGPASSWORD" psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -tAc \
         "SELECT EXISTS(SELECT 1 FROM information_schema.table_constraints WHERE table_name='yellow_taxi_trips' AND constraint_type='PRIMARY KEY')" 2>/dev/null || echo "f")
     if [[ "$PK_EXISTS" == "t" ]]; then
@@ -91,19 +101,17 @@ if command -v psql &>/dev/null; then
         fail "PostgreSQL yellow_taxi_trips missing PRIMARY KEY"
     fi
 
-    # Check row count
     ROW_COUNT=$(PGPASSWORD="$PGPASSWORD" psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -tAc \
-        "SELECT COUNT(*) FROM yellow_taxi_trips" 2>/dev/null || echo "0")
-    if [[ "$ROW_COUNT" -gt 0 ]]; then
+        "SELECT COUNT(*) FROM yellow_taxi_trips" 2>/dev/null | tr -d '[:space:]' || echo "0")
+    if [[ "$ROW_COUNT" -gt 0 ]] 2>/dev/null; then
         ok "PostgreSQL yellow_taxi_trips has $ROW_COUNT rows"
     else
         fail "PostgreSQL yellow_taxi_trips is empty"
     fi
 
-    # Check column count
     COL_COUNT=$(PGPASSWORD="$PGPASSWORD" psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -tAc \
-        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='yellow_taxi_trips'" 2>/dev/null || echo "0")
-    if [[ "$COL_COUNT" -ge 19 ]]; then
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='yellow_taxi_trips'" 2>/dev/null | tr -d '[:space:]' || echo "0")
+    if [[ "$COL_COUNT" -ge 19 ]] 2>/dev/null; then
         ok "PostgreSQL yellow_taxi_trips has $COL_COUNT columns (>=19+PK)"
     else
         fail "PostgreSQL yellow_taxi_trips has only $COL_COUNT columns, expected >=19"
@@ -121,15 +129,14 @@ if command -v hdfs &>/dev/null; then
         fail "HDFS Sqoop directory missing: $SQOOP_DIR"
     fi
 
-    # Check AVRO files in Sqoop output
     AVRO_COUNT=$(hdfs dfs -ls "$SQOOP_DIR/yellow_taxi_trips/" 2>/dev/null | grep -c "\.avro" || echo "0")
-    if [[ "$AVRO_COUNT" -gt 0 ]]; then
+    AVRO_COUNT=$(echo "$AVRO_COUNT" | tail -1 | tr -d '[:space:]')
+    if [[ "$AVRO_COUNT" -gt 0 ]] 2>/dev/null; then
         ok "HDFS: $AVRO_COUNT AVRO files in Sqoop output"
     else
         warn "No .avro files found in $SQOOP_DIR/yellow_taxi_trips/"
     fi
 
-    # Check .avsc files in HDFS
     AVSC_DIR="/user/$HDFS_USER/project/warehouse/avsc"
     if hdfs dfs -test -d "$AVSC_DIR" 2>/dev/null; then
         ok "HDFS AVSC directory exists: $AVSC_DIR"
@@ -159,52 +166,56 @@ section "3. Stage II — Hive database, tables, and EDA"
 
 if command -v beeline &>/dev/null; then
     HIVE_PASS="$(head -1 secrets/.hive.pass 2>/dev/null || echo '')"
-    BEELINE_URL="${BEELINE_URL:-jdbc:hive2://hadoop-04.uni.innopolis.ru:10001/${HIVE_DB}}"
-    BEELINE_CMD="beeline -u '${BEELINE_URL}' -n $USER -p '${HIVE_PASS}' --silent=true --outputformat=csv2"
+    BEELINE_URL="jdbc:hive2://hadoop-04.uni.innopolis.ru:10001/${HIVE_DB}"
+
+    run_beeline() {
+        beeline -u "$BEELINE_URL" -n "$USER" -p "$HIVE_PASS" \
+            --silent=true --outputformat=csv2 -e "$1" 2>/dev/null || true
+    }
 
     # Check database exists
-    DB_CHECK=$(eval $BEELINE_CMD -e "SHOW DATABASES" 2>/dev/null | grep -c "$HIVE_DB" || echo "0")
-    if [[ "$DB_CHECK" -gt 0 ]]; then
+    DB_CHECK=$(run_beeline "SHOW DATABASES" | count_grep "$HIVE_DB")
+    if [[ "$DB_CHECK" -gt 0 ]] 2>/dev/null; then
         ok "Hive database $HIVE_DB exists"
     else
         fail "Hive database $HIVE_DB not found"
     fi
 
     # Check partitioned+bucketed table exists
-    TABLE_CHECK=$(eval $BEELINE_CMD -e "SHOW TABLES IN $HIVE_DB" 2>/dev/null | grep -c "$HIVE_TABLE" || echo "0")
-    if [[ "$TABLE_CHECK" -gt 0 ]]; then
+    TABLE_CHECK=$(run_beeline "SHOW TABLES IN $HIVE_DB" | count_grep "$HIVE_TABLE")
+    if [[ "$TABLE_CHECK" -gt 0 ]] 2>/dev/null; then
         ok "Hive table $HIVE_DB.$HIVE_TABLE exists"
     else
         fail "Hive table $HIVE_DB.$HIVE_TABLE not found"
     fi
 
     # Check table has data
-    ROW_CHECK=$(eval $BEELINE_CMD -e "SELECT COUNT(*) FROM $HIVE_DB.$HIVE_TABLE" 2>/dev/null | tail -1 || echo "0")
-    if [[ "$ROW_CHECK" -gt 0 ]]; then
+    ROW_CHECK=$(run_beeline "SELECT COUNT(*) AS cnt FROM $HIVE_DB.$HIVE_TABLE" | tail -1 | tr -d '[:space:]')
+    if [[ "$ROW_CHECK" -gt 0 ]] 2>/dev/null; then
         ok "Hive table $HIVE_DB.$HIVE_TABLE has $ROW_CHECK rows"
     else
         warn "Hive table $HIVE_DB.$HIVE_TABLE appears empty"
     fi
 
     # Check unpartitioned table was deleted
-    ORIG_TABLE=$(eval $BEELINE_CMD -e "SHOW TABLES IN $HIVE_DB" 2>/dev/null | grep -c "yellow_taxi_trips[^_]" || echo "0")
-    if [[ "$ORIG_TABLE" -eq 0 ]]; then
+    ORIG_TABLE=$(run_beeline "SHOW TABLES IN $HIVE_DB" | grep -v "part_buck" | count_grep "yellow_taxi_trips")
+    if [[ "$ORIG_TABLE" -eq 0 ]] 2>/dev/null; then
         ok "Unpartitioned table yellow_taxi_trips was deleted"
     else
         fail "Unpartitioned table yellow_taxi_trips still exists (should be deleted)"
     fi
 
     # Check partitions
-    PARTITION_COUNT=$(eval $BEELINE_CMD -e "SHOW PARTITIONS $HIVE_DB.$HIVE_TABLE" 2>/dev/null | grep -c "year=" || echo "0")
-    if [[ "$PARTITION_COUNT" -gt 0 ]]; then
+    PARTITION_COUNT=$(run_beeline "SHOW PARTITIONS $HIVE_DB.$HIVE_TABLE" | count_grep "year=")
+    if [[ "$PARTITION_COUNT" -gt 0 ]] 2>/dev/null; then
         ok "Table $HIVE_TABLE has $PARTITION_COUNT partition(s)"
     else
         warn "No partitions found for $HIVE_TABLE"
     fi
 
     # Check qX_results tables exist (at least 6)
-    Q_TABLES=$(eval $BEELINE_CMD -e "SHOW TABLES IN $HIVE_DB" 2>/dev/null | grep -c "q[0-9]*_results" || echo "0")
-    if [[ "$Q_TABLES" -ge 6 ]]; then
+    Q_TABLES=$(run_beeline "SHOW TABLES IN $HIVE_DB" | count_grep "q[0-9]*_results")
+    if [[ "$Q_TABLES" -ge 6 ]] 2>/dev/null; then
         ok "$Q_TABLES EDA result tables found (>=6)"
     else
         fail "Only $Q_TABLES q*_results tables found, need >=6"
@@ -249,18 +260,8 @@ fi
 section "4. Stage III — Predictive Data Analytics (PySpark ML)"
 # ==========================================================================
 
-# HDFS models
+# Train/test JSON on HDFS (these are actually persisted, not deleted)
 if command -v hdfs &>/dev/null; then
-    for m in model1 model2 model3; do
-        MODEL_DIR="/user/$HDFS_USER/project/models/$m"
-        if hdfs dfs -test -d "$MODEL_DIR" 2>/dev/null; then
-            ok "HDFS model saved: $MODEL_DIR"
-        else
-            fail "HDFS model missing: $MODEL_DIR"
-        fi
-    done
-
-    # Check train/test JSON data
     for ds in train test; do
         DATA_DIR="/user/$HDFS_USER/project/data/$ds"
         if hdfs dfs -test -d "$DATA_DIR" 2>/dev/null; then
@@ -269,28 +270,11 @@ if command -v hdfs &>/dev/null; then
             warn "HDFS $ds dataset not found: $DATA_DIR"
         fi
     done
-
-    # Check prediction outputs on HDFS
-    for m in model1 model2 model3; do
-        PRED_DIR="/user/$HDFS_USER/project/output/${m}_predictions"
-        if hdfs dfs -test -d "$PRED_DIR" 2>/dev/null; then
-            ok "HDFS predictions: $PRED_DIR"
-        else
-            warn "HDFS predictions not found: $PRED_DIR"
-        fi
-    done
-
-    # Check evaluation on HDFS
-    EVAL_DIR="/user/$HDFS_USER/project/output/evaluation"
-    if hdfs dfs -test -d "$EVAL_DIR" 2>/dev/null; then
-        ok "HDFS evaluation output: $EVAL_DIR"
-    else
-        warn "HDFS evaluation not found: $EVAL_DIR"
-    fi
 fi
 
-# Local models
-for m in model1 model2 model3; do
+# Local models (saved via hdfs dfs -get from temp staging, then staging deleted)
+# Model suffixes are: model1_lr, model2_rf, model3_gbt
+for m in model1_lr model2_rf model3_gbt; do
     if [[ -d "models/$m" ]]; then
         ok "Local model directory: models/$m"
     else
@@ -303,16 +287,11 @@ for m in model1 model2 model3; do
     f="output/${m}_predictions.csv"
     if [[ -s "$f" ]]; then
         ok "$f exists and is non-empty"
-        # Check CSV has label and prediction columns
         HEADER=$(head -1 "$f" 2>/dev/null || echo "")
         if echo "$HEADER" | grep -qi "label" && echo "$HEADER" | grep -qi "prediction"; then
             ok "$f has label and prediction columns"
         else
             fail "$f missing label/prediction columns (header: $HEADER)"
-        fi
-        # Check single partition (should be one CSV file, not a directory)
-        if [[ -f "$f" ]]; then
-            ok "$f saved as single partition"
         fi
     else
         fail "$f missing (required prediction output)"
@@ -328,19 +307,18 @@ if [[ -s "output/evaluation.csv" ]]; then
     else
         warn "evaluation.csv might be missing model column"
     fi
-    # Check it contains results for all models
-    for m in model1 model2 model3; do
-        if grep -qi "$m\|LinearRegression\|RandomForest\|GBT" output/evaluation.csv 2>/dev/null; then
-            ok "evaluation.csv references $m results"
+    for label in "LinearRegression" "RandomForestRegressor" "GBTRegressor"; do
+        if grep -q "$label" output/evaluation.csv 2>/dev/null; then
+            ok "evaluation.csv contains $label results"
         else
-            warn "evaluation.csv might not have $m results"
+            warn "evaluation.csv might not have $label results"
         fi
     done
 else
     fail "output/evaluation.csv missing"
 fi
 
-# Local train/test JSON
+# Local train/test JSON (pulled from HDFS via hdfs dfs -get)
 for ds in train test; do
     f="data/${ds}.json"
     if [[ -s "$f" ]]; then
@@ -348,7 +326,24 @@ for ds in train test; do
     elif [[ -d "data/$ds" ]]; then
         ok "data/$ds directory exists (Spark JSON partitioned output)"
     else
-        warn "$f / data/$ds not found"
+        warn "$f / data/$ds not found (pulled from HDFS at runtime)"
+    fi
+done
+
+# Stage3 training summary
+if [[ -s "output/stage3_training_summary.json" ]]; then
+    ok "output/stage3_training_summary.json exists"
+else
+    warn "output/stage3_training_summary.json missing"
+fi
+
+# Best params JSONs
+for m in model1 model2 model3; do
+    f="output/${m}_best_params.json"
+    if [[ -s "$f" ]]; then
+        ok "$f exists"
+    else
+        warn "$f missing"
     fi
 done
 
@@ -357,9 +352,9 @@ section "5. Pylint quality check"
 # ==========================================================================
 
 if command -v pylint &>/dev/null; then
-    PYLINT_SCORE=$(pylint scripts/ --output-format=text 2>/dev/null | grep "Your code has been rated" | grep -oP '[\d.]+/10' | head -1 || echo "N/A")
+    PYLINT_SCORE=$(pylint scripts/ --ignore=.ipynb_checkpoints --output-format=text 2>/dev/null | grep "Your code has been rated" | grep -oP '[\d.]+/10' | head -1 || echo "N/A")
     if [[ "$PYLINT_SCORE" != "N/A" ]]; then
-        ok "Pylint score: $PYLINT_SCORE"
+        ok "Pylint score: $PYLINT_SCORE (ignoring .ipynb_checkpoints)"
     else
         warn "Could not determine pylint score"
     fi

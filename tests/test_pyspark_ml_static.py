@@ -216,7 +216,7 @@ class TestHyperparameterTuning:
     def test_cv_on_training_data_only(self, stage3_helpers):
         """Rubric: optimize hyperparameters using CV on training data only."""
         assert "fit_cv_and_pick_best" in stage3_helpers
-        assert "cv.fit(cv_train)" in stage3_helpers or "cv.fit(" in stage3_helpers
+        assert "cross_validator.fit(cv_train)" in stage3_helpers or "cross_validator.fit(" in stage3_helpers
 
     def test_best_model_selection(self, stage3_helpers):
         """Select the best model from grid search."""

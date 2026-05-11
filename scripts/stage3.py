@@ -197,7 +197,7 @@ def engineer_features(raw_df):
 
     tau = F.lit(2.0 * math.pi)
 
-    df = (
+    filtered_df = (
         df0.filter(F.col("payment_type") == F.lit(1))
         .filter(F.col("fare_amount") > F.lit(0))
         .filter(F.col("trip_distance") > F.lit(0))
@@ -242,8 +242,8 @@ def engineer_features(raw_df):
         .drop("_m", "_hh", "_dow0")
     )
 
-    if "RatecodeID" in df.columns:
-        df = df.withColumn(
+    if "RatecodeID" in filtered_df.columns:
+        filtered_df = filtered_df.withColumn(
             "airport_rate",
             F.when(F.col("RatecodeID").isin(2, 3), F.lit(1.0)).otherwise(F.lit(0.0)),
         )
@@ -258,11 +258,11 @@ def engineer_features(raw_df):
             "airport_fee",
             "improvement_surcharge",
         )
-        if c in df.columns
+        if c in filtered_df.columns
     ]
     if pre_tip_cols:
         total_expr = sum((F.coalesce(F.col(c), F.lit(0.0)) for c in pre_tip_cols), F.lit(0.0))
-        df = df.withColumn("pre_tip_amount", total_expr)
+        filtered_df = filtered_df.withColumn("pre_tip_amount", total_expr)
 
     cand = [
         "VendorID",
@@ -284,8 +284,8 @@ def engineer_features(raw_df):
         "airport_rate",
         "pre_tip_amount",
     ]
-    use = [c for c in cand if c in df.columns]
-    return df.select(*(use + ["__split_ts", "tip_amount"]))
+    use = [c for c in cand if c in filtered_df.columns]
+    return filtered_df.select(*(use + ["__split_ts", "tip_amount"]))
 
 
 def make_preprocessing_stages(
@@ -339,17 +339,17 @@ def _load_source_data(args, spark):
         raw = load_raw(spark, data_dir_resolved)
         data_note = data_dir_resolved
     if args.sample_fraction is not None:
-        s = args.sample_fraction
-        if not 0 < s <= 1:
+        sample_frac = args.sample_fraction
+        if not 0 < sample_frac <= 1:
             raise ValueError("--sample-fraction must be in (0, 1]")
-        raw = raw.sample(withReplacement=False, fraction=s, seed=args.random_seed)
+        raw = raw.sample(withReplacement=False, fraction=sample_frac, seed=args.random_seed)
     return raw, data_note
 
 
 def _validate_splits(train_n, test_n, cv_sample_n, cv_folds):
     """Raise RuntimeError if any data split is empty or too small for CV."""
-    n = train_n + test_n
-    if n == 0:
+    total_rows = train_n + test_n
+    if total_rows == 0:
         raise RuntimeError("Empty dataframe after preprocessing (check filters/input).")
     if train_n == 0 or test_n == 0:
         raise RuntimeError(
@@ -419,9 +419,9 @@ def _write_evaluation(spark, model_results, output_root):
 def _write_feature_signals(spark, model_results, test_df, output_root):
     """Write model_feature_signals.csv from model results list."""
     signal_rows = []
-    for r in model_results:
-        if r["best"] is not None:
-            signal_rows += top_model_signal_rows(r["name"], r["best"], test_df)
+    for result in model_results:
+        if result["best"] is not None:
+            signal_rows += top_model_signal_rows(result["name"], result["best"], test_df)
     if signal_rows:
         signal_df = spark.createDataFrame(
             signal_rows,
@@ -453,17 +453,17 @@ def _write_summary(model_results, ctx):
         "prediction_postprocess": "negative predictions clipped to 0.0 for metrics and CSV exports",
         "feature_signal_csv": os.path.join(output_root, "model_feature_signals.csv"),
     }
-    for r in model_results:
-        summary[r["key"]] = {
-            "name": r["name"],
-            "test_metrics": r["metrics"],
-            "best_params_from_cv": r["params"],
-            "prediction_csv": os.path.join(output_root, f"{r['key']}_predictions.csv"),
-            "persisted_pipeline": os.path.join(ctx["models_root"], r["suffix"]),
+    for result in model_results:
+        summary[result["key"]] = {
+            "name": result["name"],
+            "test_metrics": result["metrics"],
+            "best_params_from_cv": result["params"],
+            "prediction_csv": os.path.join(output_root, f"{result['key']}_predictions.csv"),
+            "persisted_pipeline": os.path.join(ctx["models_root"], result["suffix"]),
         }
     summ_path = os.path.join(output_root, "stage3_training_summary.json")
-    with open(summ_path, "w", encoding="utf-8") as fh:
-        json.dump(summary, fh, indent=2, default=str)
+    with open(summ_path, "w", encoding="utf-8") as file_handle:
+        json.dump(summary, file_handle, indent=2, default=str)
     print(json.dumps(summary, indent=2, default=str))
 
 
@@ -474,12 +474,12 @@ def _prepare_data(args, spark):
     feats = [c for c in ml_ready.columns if c not in ("label", "__split_ts")]
     ml_ready = ml_ready.select(*feats, "__split_ts", "label")
 
-    md = StorageLevel.MEMORY_AND_DISK
-    ml_ready = ml_ready.persist(md)
+    storage_level = StorageLevel.MEMORY_AND_DISK
+    ml_ready = ml_ready.persist(storage_level)
 
     train_df, test_df, split_cutoff = temporal_train_test_split(ml_ready)
-    train_df = train_df.persist(md)
-    test_df = test_df.persist(md)
+    train_df = train_df.persist(storage_level)
+    test_df = test_df.persist(storage_level)
 
     train_n = train_df.count()
     test_n = test_df.count()
@@ -487,7 +487,7 @@ def _prepare_data(args, spark):
     cv_train_df, cv_sample_n = build_cv_sample(
         train_df, train_n, args.cv_sample_size, args.random_seed,
     )
-    cv_train_df = cv_train_df.persist(md)
+    cv_train_df = cv_train_df.persist(storage_level)
     cv_sample_n = cv_train_df.count() if cv_sample_n is None else cv_sample_n
     _validate_splits(train_n, test_n, cv_sample_n, args.cv_folds)
 
@@ -504,25 +504,25 @@ def _prepare_data(args, spark):
 
 def _build_model_specs(feats, scale_center, seed):
     """Define the three model pipelines and their CV grids."""
-    lr = LinearRegression(
+    linear_reg = LinearRegression(
         labelCol="label", featuresCol="features",
         maxIter=200, elasticNetParam=0.5, regParam=0.01,
     )
     lr_grid = (
         ParamGridBuilder()
-        .addGrid(lr.regParam, [1e-4, 1e-3, 1e-2])
-        .addGrid(lr.elasticNetParam, [0.0, 0.5, 1.0])
-        .addGrid(lr.tol, [1e-4, 1e-5, 1e-6])
+        .addGrid(linear_reg.regParam, [1e-4, 1e-3, 1e-2])
+        .addGrid(linear_reg.elasticNetParam, [0.0, 0.5, 1.0])
+        .addGrid(linear_reg.tol, [1e-4, 1e-5, 1e-6])
         .build()
     )
-    rf = RandomForestRegressor(
+    random_forest = RandomForestRegressor(
         labelCol="label", featuresCol="features", seed=seed,
     )
     rf_grid = (
         ParamGridBuilder()
-        .addGrid(rf.numTrees, [20, 50, 100])
-        .addGrid(rf.maxDepth, [6, 8, 10])
-        .addGrid(rf.minInstancesPerNode, [1, 5, 10])
+        .addGrid(random_forest.numTrees, [20, 50, 100])
+        .addGrid(random_forest.maxDepth, [6, 8, 10])
+        .addGrid(random_forest.minInstancesPerNode, [1, 5, 10])
         .build()
     )
     gbt = GBTRegressor(
@@ -539,10 +539,10 @@ def _build_model_specs(feats, scale_center, seed):
     pre = make_preprocessing_stages
     return [
         {"key": "model1", "name": "LinearRegression", "suffix": "model1_lr",
-         "pipeline": Pipeline(stages=pre(feats, CATEGORICAL_FEATURES, scale_center, True) + [lr]),
+         "pipeline": Pipeline(stages=pre(feats, CATEGORICAL_FEATURES, scale_center, True) + [linear_reg]),
          "grid": lr_grid},
         {"key": "model2", "name": "RandomForestRegressor", "suffix": "model2_rf",
-         "pipeline": Pipeline(stages=pre(feats, CATEGORICAL_FEATURES, scale_center, False) + [rf]),
+         "pipeline": Pipeline(stages=pre(feats, CATEGORICAL_FEATURES, scale_center, False) + [random_forest]),
          "grid": rf_grid},
         {"key": "model3", "name": "GBTRegressor", "suffix": "model3_gbt",
          "pipeline": Pipeline(
@@ -564,9 +564,9 @@ def main():
 
     ctx = _prepare_data(args, spark)
     scale_center = scaler_use_mean(args.scaler_with_mean)
-    n = ctx["train_n"] + ctx["test_n"]
+    total_rows = ctx["train_n"] + ctx["test_n"]
     print(
-        f"[stage3] source={ctx['data_note']} rows={n:,} train={ctx['train_n']:,} "
+        f"[stage3] source={ctx['data_note']} rows={total_rows:,} train={ctx['train_n']:,} "
         f"test={ctx['test_n']:,} cv_sample={ctx['cv_sample_n']:,} "
         f"features={len(ctx['feats'])} scaler_with_mean={scale_center} "
         f"cv_parallelism={args.parallelism} split_cutoff={ctx['split_cutoff']}",
