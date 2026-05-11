@@ -151,7 +151,10 @@ def coerce_epoch_ms_pickup_dropoff(raw_df):
         type_name = typ.lower().split("(")[0].strip()
         if type_name == "timestamp":
             return False
-        return type_name in ("bigint", "long", "int", "smallint", "short", "double", "float", "decimal")
+        return type_name in (
+            "bigint", "long", "int", "smallint", "short",
+            "double", "float", "decimal",
+        )
 
     dtypes = dict(raw_df.dtypes)
     out = raw_df

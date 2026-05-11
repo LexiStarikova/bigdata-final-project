@@ -539,10 +539,12 @@ def _build_model_specs(feats, scale_center, seed):
     pre = make_preprocessing_stages
     return [
         {"key": "model1", "name": "LinearRegression", "suffix": "model1_lr",
-         "pipeline": Pipeline(stages=pre(feats, CATEGORICAL_FEATURES, scale_center, True) + [linear_reg]),
+         "pipeline": Pipeline(
+             stages=pre(feats, CATEGORICAL_FEATURES, scale_center, True) + [linear_reg]),
          "grid": lr_grid},
         {"key": "model2", "name": "RandomForestRegressor", "suffix": "model2_rf",
-         "pipeline": Pipeline(stages=pre(feats, CATEGORICAL_FEATURES, scale_center, False) + [random_forest]),
+         "pipeline": Pipeline(
+             stages=pre(feats, CATEGORICAL_FEATURES, scale_center, False) + [random_forest]),
          "grid": rf_grid},
         {"key": "model3", "name": "GBTRegressor", "suffix": "model3_gbt",
          "pipeline": Pipeline(
