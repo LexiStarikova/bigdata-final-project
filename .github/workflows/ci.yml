@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Bash syntax check
+        run: |
+          find . -name '*.sh' -not -path './.git/*' -not -path './.venv/*' \
+            -exec bash -n {} +
+
+      - name: ShellCheck
+        run: |
+          find . -name '*.sh' -not -path './.git/*' -not -path './.venv/*' \
+            -exec shellcheck --severity=warning {} +
+        continue-on-error: true
+
+      - name: Python compile check
+        run: |
+          python -m py_compile scripts/stage3.py
+          python -m py_compile scripts/stage3_helpers.py
+          python -m py_compile scripts/build_projectdb.py
+          python -m py_compile scripts/prepare_stage4_ml_artifacts.py
+
+      - name: Ruff
+        run: ruff check scripts/ tests/
+
+      - name: Pylint (non-blocking score)
+        run: |
+          pylint scripts/ tests/ \
+            --disable=C,R \
+            --fail-under=0 \
+            --ignore-patterns='conftest.py' \
+            || true
+        continue-on-error: true
+
+      - name: Pytest
+        run: pytest tests/ -v --tb=short -x
+
+      - name: Static validation
+        run: python tests/static_validate.py
