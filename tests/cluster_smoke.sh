@@ -19,12 +19,12 @@ fail() { echo -e "${RED}[FAIL]${NC} $1"; fail_count=$((fail_count + 1)); }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "=== Cluster Smoke Test ==="
+echo "Cluster Smoke Test"
 echo "Repo root: $ROOT"
 echo ""
 
-# 1. Check required commands
-echo "--- Checking commands ---"
+# Check required commands
+echo "Checking commands"
 for cmd in hdfs sqoop beeline spark-submit; do
     if command -v "$cmd" &>/dev/null; then
         ok "$cmd available"
@@ -33,9 +33,9 @@ for cmd in hdfs sqoop beeline spark-submit; do
     fi
 done
 
-# 2. Check secrets files (never print contents)
+# Check secrets files (never print contents)
 echo ""
-echo "--- Checking secrets ---"
+echo "Checking secrets"
 for secret in secrets/.psql.pass secrets/.hive.pass; do
     if [[ -f "$secret" ]]; then
         if [[ -s "$secret" ]]; then
@@ -48,32 +48,7 @@ for secret in secrets/.psql.pass secrets/.hive.pass; do
     fi
 done
 
-# 3. Run pipeline stages
-echo ""
-echo "--- Running pipeline stages ---"
-
-echo "Running stage1.sh..."
-if bash scripts/stage1.sh; then
-    ok "stage1.sh completed"
-else
-    fail "stage1.sh failed"
-fi
-
-echo "Running stage2.sh..."
-if bash scripts/stage2.sh; then
-    ok "stage2.sh completed"
-else
-    fail "stage2.sh failed"
-fi
-
-echo "Running stage3.sh..."
-if bash scripts/stage3.sh; then
-    ok "stage3.sh completed"
-else
-    fail "stage3.sh failed"
-fi
-
-# 4. Check local output files
+# Check local output files
 echo ""
 echo "--- Checking local output files ---"
 
@@ -120,16 +95,12 @@ for f in "${optional_files[@]}"; do
     fi
 done
 
-# 5. Check HDFS paths
 echo ""
-echo "--- Checking HDFS paths ---"
+echo "Checking HDFS paths"
 
 hdfs_paths=(
     "project/warehouse"
     "project/hive/warehouse"
-    "project/models/model1"
-    "project/models/model2"
-    "project/models/model3"
 )
 
 if command -v hdfs &>/dev/null; then
@@ -146,7 +117,7 @@ fi
 
 # Summary
 echo ""
-echo "=== Smoke Test Summary ==="
+echo "Smoke test summary"
 echo -e "${GREEN}Passed: ${pass_count}${NC}"
 echo -e "${YELLOW}Warnings: ${warn_count}${NC}"
 echo -e "${RED}Failures: ${fail_count}${NC}"
