@@ -121,7 +121,6 @@ export_table "q8_results"  "output/q8.csv"
 export_table "q9_results"  "output/q9.csv"
 export_table "q10_results" "output/q10.csv"
 export_table "q11_results" "output/q11.csv"
-export_table "q12_results" "output/q12.csv"
 
 echo "      All CSV files saved."
 

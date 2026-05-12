@@ -69,7 +69,6 @@ optional_files=(
     "output/q9.csv"
     "output/q10.csv"
     "output/q11.csv"
-    "output/q12.csv"
     "output/model1_predictions.csv"
     "output/model2_predictions.csv"
     "output/model3_predictions.csv"
