@@ -183,7 +183,92 @@ SELECT
 FROM stage4_prediction_samples
 GROUP BY model, error_bucket;
 
+DROP VIEW IF EXISTS stage4_model_error_boxplot_v2;
+CREATE VIEW stage4_model_error_boxplot_v2 AS
+SELECT
+    q.model AS model,
+    q.sample_bucket AS sample_bucket,
+    q.metric AS metric_name,
+    q.value AS metric_value
+FROM (
+    SELECT
+        model,
+        PMOD(source_row_number, 100) AS sample_bucket,
+        'MAE' AS metric,
+        AVG(absolute_error) AS value
+    FROM stage4_prediction_samples
+    WHERE absolute_error IS NOT NULL
+      AND `error` IS NOT NULL
+    GROUP BY model, PMOD(source_row_number, 100)
+
+    UNION ALL
+
+    SELECT
+        model,
+        PMOD(source_row_number, 100) AS sample_bucket,
+        'RMSE' AS metric,
+        SQRT(AVG(`error` * `error`)) AS value
+    FROM stage4_prediction_samples
+    WHERE absolute_error IS NOT NULL
+      AND `error` IS NOT NULL
+    GROUP BY model, PMOD(source_row_number, 100)
+) q;
+
+DROP VIEW IF EXISTS team35_best_hyperparams_table;
+CREATE VIEW team35_best_hyperparams_table AS
+SELECT
+    model,
+    CONCAT_WS(
+        '\n',
+        COLLECT_LIST(CONCAT(param_name, ' = ', param_value))
+    ) AS best_hyperparameters
+FROM stage4_best_params
+WHERE param_name IN (
+    'regParam',
+    'elasticNetParam',
+    'maxDepth',
+    'numTrees',
+    'minInstancesPerNode',
+    'stepSize',
+    'maxIter',
+    'tol'
+)
+GROUP BY model;
+
+DROP VIEW IF EXISTS team_35_distributions;
+CREATE VIEW team_35_distributions AS
+SELECT
+    d.bucket AS tip_bucket,
+    d.series AS series,
+    d.trip_count AS trip_count
+FROM (
+    SELECT
+        CAST(FLOOR(label * 2.0) / 2.0 AS DOUBLE) AS bucket,
+        'Actual tip' AS series,
+        COUNT(*) AS trip_count
+    FROM stage4_model2_predictions
+    WHERE label IS NOT NULL
+      AND label >= 0
+      AND label <= 30
+    GROUP BY CAST(FLOOR(label * 2.0) / 2.0 AS DOUBLE)
+
+    UNION ALL
+
+    SELECT
+        CAST(FLOOR(prediction * 2.0) / 2.0 AS DOUBLE) AS bucket,
+        'Predicted tip' AS series,
+        COUNT(*) AS trip_count
+    FROM stage4_model2_predictions
+    WHERE prediction IS NOT NULL
+      AND prediction >= 0
+      AND prediction <= 30
+    GROUP BY CAST(FLOOR(prediction * 2.0) / 2.0 AS DOUBLE)
+) d;
+
 -- Lightweight verification output for stage4.sh logs.
 SHOW TABLES LIKE 'stage4_*';
+SHOW TABLES LIKE 'team35_*';
+SHOW TABLES LIKE 'team_35_*';
 SELECT * FROM stage4_evaluation;
 SELECT * FROM stage4_prediction_sample_metrics;
+SELECT * FROM team35_best_hyperparams_table;
