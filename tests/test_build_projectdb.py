@@ -2,18 +2,16 @@
 
 import io
 import os
-import textwrap
 from pathlib import Path
 from unittest import mock
 
 import pandas as pd
-import numpy as np
 import pytest
 
 import build_projectdb as bp
 
 
-# ── COPY_COLUMNS ──────────────────────────────────────────────────────────
+# COPY_COLUMNS
 
 EXPECTED_COLUMNS = [
     "vendorid",
@@ -86,7 +84,7 @@ class TestCopySQL:
         assert cols_in_sql == bp.COPY_COLUMNS
 
 
-# ── _repo_root ────────────────────────────────────────────────────────────
+# _repo_root
 
 class TestRepoRoot:
     def test_returns_path(self):
@@ -102,7 +100,7 @@ class TestRepoRoot:
         assert (root / "sql").is_dir()
 
 
-# ── _load_password ────────────────────────────────────────────────────────
+# _load_password
 
 class TestLoadPassword:
     def test_reads_from_env_pgpassword(self, tmp_path):
@@ -152,7 +150,7 @@ class TestLoadPassword:
                 bp._load_password(tmp_path)
 
 
-# ── _normalize_frame ──────────────────────────────────────────────────────
+# _normalize_frame
 
 class TestNormalizeFrame:
     @pytest.fixture
@@ -322,7 +320,7 @@ class TestNormalizeFrame:
             assert len(fields) == len(bp.COPY_COLUMNS)
 
 
-# ── _parquet_paths ────────────────────────────────────────────────────────
+# _parquet_paths
 
 class TestParquetPaths:
     def test_finds_matching_files(self, tmp_path):
@@ -359,7 +357,7 @@ class TestParquetPaths:
             bp._parquet_paths(tmp_path)
 
 
-# ── _connect ──────────────────────────────────────────────────────────────
+# _connect
 
 class TestConnect:
     def test_exits_when_no_user(self, tmp_path):

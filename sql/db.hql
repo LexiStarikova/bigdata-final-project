@@ -49,14 +49,14 @@ CREATE EXTERNAL TABLE yellow_taxi_trips_part_buck (
     congestion_surcharge DOUBLE,
     airport_fee DOUBLE
 )
-PARTITIONED BY (year INT)
+PARTITIONED BY (month INT)
 CLUSTERED BY (vendorid) INTO 4 BUCKETS
 STORED AS AVRO
 LOCATION 'project/hive/warehouse/yellow_taxi_trips_part_buck'
 TBLPROPERTIES ('avro.schema.url'='project/warehouse/avsc/yellow_taxi_trips.avsc');
 
 -- 6. Load data with automatic partition creation
-INSERT INTO yellow_taxi_trips_part_buck PARTITION (year)
+INSERT INTO yellow_taxi_trips_part_buck PARTITION (month)
 SELECT
     trip_id,
     vendorid,
@@ -78,11 +78,10 @@ SELECT
     total_amount,
     congestion_surcharge,
     airport_fee,
-    YEAR(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT))) AS year
+    MONTH(FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT))) AS month
 FROM yellow_taxi_trips;
 
--- 7. Verify the results
--- Check partitions were created correctly
+
 SHOW PARTITIONS yellow_taxi_trips_part_buck;
 
 -- Count total records to ensure all data was transferred
@@ -93,9 +92,8 @@ SELECT trip_id,
        vendorid,
        FROM_UNIXTIME(CAST(tpep_pickup_datetime / 1000 AS BIGINT))   AS pickup_ts,
        FROM_UNIXTIME(CAST(tpep_dropoff_datetime / 1000 AS BIGINT))   AS dropoff_ts,
-       year
+       month
 FROM yellow_taxi_trips_part_buck
 LIMIT 3;
 
--- 8. Drop original external table
 DROP TABLE yellow_taxi_trips;

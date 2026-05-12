@@ -85,7 +85,7 @@ echo "      Done. Output saved to output/hive_results.txt"
 #    - q12 : Late-night tipping (credit card only)
 
 echo ""
-echo "[3/5] Running sql/eda.hql (10 EDA queries)..."
+echo "[3/5] Running sql/eda.hql (12 EDA queries)..."
 
 ${BEELINE} -f sql/eda.hql \
     > output/eda_results.txt 2>/dev/null
@@ -121,7 +121,6 @@ export_table "q8_results"  "output/q8.csv"
 export_table "q9_results"  "output/q9.csv"
 export_table "q10_results" "output/q10.csv"
 export_table "q11_results" "output/q11.csv"
-export_table "q12_results" "output/q12.csv"
 
 echo "      All CSV files saved."
 
