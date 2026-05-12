@@ -35,7 +35,21 @@ echo "Loading Parquet into PostgreSQL (${DB}) …"
 python3 scripts/build_projectdb.py
 
 echo "Clearing HDFS warehouse ${WAREHOUSE} if present …"
-hdfs dfs -rm -r -f "${WAREHOUSE}" || true
+# -skipTrash: иначе данные уходят в .Trash и продолжают учитываться в квоте — при лимите 32 ГБ Sqoop падает с DSQuotaExceededException.
+hdfs dfs -rm -r -f -skipTrash "${WAREHOUSE}" || true
+
+# Старая корзина и staging часто держат десятки МБ–ГБ в квоте /user/$USER даже после «Deleted warehouse».
+echo "HDFS: суммарный объём под /user/${USER_NAME} …"
+hdfs dfs -du -s -h "/user/${USER_NAME}" 2>/dev/null || true
+
+echo "Purging HDFS Trash /user/${USER_NAME}/.Trash (-skipTrash) …"
+hdfs dfs -rm -r -f -skipTrash "/user/${USER_NAME}/.Trash" 2>/dev/null || true
+hdfs dfs -expunge 2>/dev/null || true
+
+if [[ "${STAGE1_CLEAN_MR_STAGING:-0}" == "1" ]]; then
+  echo "STAGE1_CLEAN_MR_STAGING=1: removing /user/${USER_NAME}/.staging …"
+  hdfs dfs -rm -r -f -skipTrash "/user/${USER_NAME}/.staging" 2>/dev/null || true
+fi
 
 echo "Sqoop: import yellow_taxi_trips as Avro + Snappy → HDFS ${WAREHOUSE}/yellow_taxi_trips …"
 # Parallel mappers on trip_id (BIGINT PK). For smoke tests: STAGE1_SQOOP_MAPPERS=1
