@@ -58,6 +58,31 @@ else
          "Run stage1.sh first if this is a fresh setup."
 fi
 
+# Memory optimization
+
+echo "Freeing HDFS space and checking quota..."
+
+# Show current usage
+echo "      Current HDFS usage under /user/${USER_NAME}:"
+hdfs dfs -du -s -h "/user/${USER_NAME}" 2>/dev/null || echo "      (cannot read usage)"
+
+# Aggressively clean trash (uses quota even with Deleted flag)
+echo "      Purging HDFS Trash (-skipTrash)..."
+hdfs dfs -rm -r -f -skipTrash "/user/${USER_NAME}/.Trash" 2>/dev/null || true
+hdfs dfs -expunge 2>/dev/null || true
+
+# Clean staging directory (can hold GB of temporary MR data)
+echo "      Cleaning staging directory..."
+hdfs dfs -rm -r -f -skipTrash "/user/${USER_NAME}/.staging" 2>/dev/null || true
+
+# Clean any temporary Hive directories
+echo "      Cleaning Hive tmp directories..."
+hdfs dfs -rm -r -f -skipTrash "/tmp/hive/${USER_NAME}" 2>/dev/null || true
+hdfs dfs -rm -r -f -skipTrash "/user/${USER_NAME}/tmp" 2>/dev/null || true
+
+echo "      HDFS usage after cleanup:"
+hdfs dfs -du -s -h "/user/${USER_NAME}" 2>/dev/null || echo "      (cannot read usage)"
+
 
 # 2. Create Hive database + tables
 
@@ -65,8 +90,8 @@ echo ""
 echo "[2/5] Running sql/db.hql (create DB, tables, load data)..."
 
 ${BEELINE} -f sql/db.hql \
-    > output/hive_results.txt 2>/dev/null
-
+    > output/hive_results.txt 2> output/hive_results.err
+    
 echo "      Done. Output saved to output/hive_results.txt"
 
 
